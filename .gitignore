@@ -6,3 +6,7 @@ DerivedData/
 *.xcuserstate
 xcuserdata/
 local.properties
+
+.build/
+.swiftpm/
+artifacts/

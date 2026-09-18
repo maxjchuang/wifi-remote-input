@@ -35,3 +35,18 @@ After pairing, both sides store device keys. Every session is authenticated and 
 5. Navigation keys and editor actions.
 6. Optional mouse and scroll support using Android Accessibility APIs.
 7. Packaging, upgrade flow, documentation, and compatibility testing on Xiaomi 13.
+
+## Implemented MVP (0.1.0)
+
+- Android SDK 35/Kotlin with user-started `specialUse` foreground service; no boot receiver. A local TLS WebSocket listener shares one process with the IME. IME calls are marshalled to the main thread, rechecking authorization immediately before applying input.
+- Certificate pinning uses a full SHA-256 value transferred via a QR code on the phone display (manual entry remains available); pairing uses a two-minute, eight-digit code with a global five-attempt budget. The Mac stores the issued 256-bit bearer device key in Keychain; Android stores only its hash and disables backups. A new pairing replaces the previous Mac.
+- TLS certificate/private key persists in Android's app-private no-backup directory. Reinstalling/clearing phone application data requires pairing with a new fingerprint. No separate account or CA service exists.
+- SwiftUI text editor and structured-key buttons; a shared URLSession transport also drives local interoperability tests. The client has one in-flight request, checks connectivity every five seconds and never replays input automatically.
+- All Android password editor variants and locked devices reject both text and keys. No focused editor returns `no_editor`. No AccessibilityService is shipped.
+- Scope deliberately excludes direct global hardware capture, mouse, clipboard, Bonjour. None is needed for the Unicode MVP.
+
+The foreground service declaration follows [Android's service-type requirements](https://developer.android.com/about/versions/14/changes/fgs-types-required). Real HyperOS background behavior remains a device-level acceptance check.
+
+## QR pairing (0.2.0)
+
+Android renders the address, full certificate fingerprint and existing expiring pairing code using ZXing. Wi-Fi addresses are preferred; the phone allows selecting another local interface. macOS captures camera frames with AVFoundation, detects QR codes locally using Vision, validates the offer and runs the existing pinned TLS pairing exchange. No new listening port or unauthenticated input route is introduced. Camera access is requested only when the user opens the scanner.
