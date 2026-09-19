@@ -18,15 +18,20 @@ class Pairing(private val load: () -> String?, private val save: (String?) -> Un
     private var expires = 0L
     private var attempts = 0
     @Synchronized fun begin(): String { return Secrets.code().also { code = it; expires = clock() + 120_000; attempts = 0 } }
-    @Synchronized fun pair(candidate: String): String? {
+    @Synchronized fun pair(candidate: String, name: String = "未命名 Mac"): String? {
         val expected = code ?: return null
         if (clock() >= expires || attempts >= 5) { code = null; return null }
         attempts++
         if (!Secrets.equal(expected, candidate)) return null
         code = null
-        return Secrets.token().also { save(Secrets.hash(it)) }
+        return Secrets.token().also { save(JSONObject().put("hash", Secrets.hash(it)).put("name", name).toString()) }
     }
-    @Synchronized fun authenticate(token: String): Boolean = token.length == 64 && load()?.let { Secrets.equal(it, Secrets.hash(token)) } == true
+    @Synchronized fun authenticate(token: String): Boolean = token.length == 64 && load()?.let { Secrets.equal(storedHash(it), Secrets.hash(token)) } == true
+    private fun storedHash(value: String): String = if (value.startsWith("{")) JSONObject(value).getString("hash") else value
+    @Synchronized fun peerName(): String? = load()?.let { if (it.startsWith("{")) JSONObject(it).optString("name", "未命名 Mac") else "未命名 Mac" }
+    @Synchronized fun renameAuthenticated(token: String, name: String) {
+        if (authenticate(token)) save(JSONObject().put("hash", Secrets.hash(token)).put("name", name).toString())
+    }
     @Synchronized fun isPending(candidate: String): Boolean = code == candidate && clock() < expires && attempts < 5
     @Synchronized fun cancel() { code = null }
     @Synchronized fun revoke() { code = null; save(null) }
@@ -40,7 +45,7 @@ object EditorPolicy {
     }
 }
 
-class Protocol(private val pairing: Pairing, private val input: (String, String) -> String) {
+class Protocol(private val pairing: Pairing, private val snapshot: () -> JSONObject = { JSONObject().put("status", "snapshot_unavailable") }, private val deviceName: () -> String = { "Android 手机" }, private val input: (String, String) -> String) {
     @Volatile var credential: String? = null
         private set
     private var count = 0
@@ -57,17 +62,26 @@ class Protocol(private val pairing: Pairing, private val input: (String, String)
             val type = m.get("type") as? String ?: return response("invalid_message")
             val payload = m.getJSONObject("payload")
             fun string(key: String): String = payload.get(key) as? String ?: throw IllegalArgumentException()
+            fun peerName(): String? {
+                if (!payload.has("deviceName")) return null
+                val name = string("deviceName").trim()
+                require(name.isNotEmpty() && name.length <= 80 && name.none { it.isISOControl() || it in '\u202a'..'\u202e' || it in '\u2066'..'\u2069' })
+                return name
+            }
             when (type) {
                 "pair" -> {
-                    val token = pairing.pair(string("code")) ?: return response("authentication_failed")
+                    credential = null
+                    val name = peerName() ?: "未命名 Mac"
+                    val token = pairing.pair(string("code"), name) ?: return response("authentication_failed")
                     credential = token
-                    response("paired").put("token", token)
+                    response("paired").put("token", token).put("deviceName", deviceName())
                 }
                 "auth" -> {
                     credential = null
+                    val name = peerName()
                     val token = string("token")
                     if (!pairing.authenticate(token)) response("authentication_failed")
-                    else { credential = token; response("authenticated") }
+                    else { if (name != null) pairing.renameAuthenticated(token, name); credential = token; response("authenticated").put("deviceName", deviceName()) }
                 }
                 else -> {
                     if (credential?.let(pairing::authenticate) != true) return response("unauthorized")
@@ -78,7 +92,20 @@ class Protocol(private val pairing: Pairing, private val input: (String, String)
                         }
                         "key.press" -> {
                             val key = string("key")
-                            if (key !in setOf("Enter", "Backspace", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown")) response("invalid_key") else response(input(type, key))
+                            if (key !in setOf("Enter", "Send", "LineBreak", "Backspace", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown")) response("invalid_key") else response(input(type, key))
+                        }
+                        "editor.edit" -> {
+                            val id = string("editorId")
+                            val hash = string("expectedHash")
+                            val text = string("text")
+                            val start = string("selectionStart").toIntOrNull()
+                            val end = string("selectionEnd").toIntOrNull()
+                            if (payload.length() != 5 || id.isEmpty() || id.length > 64 || !hash.matches(Regex("[0-9a-f]{64}")) || text.length > 2048 || start == null || end == null || start !in 0..text.length || end !in start..text.length) response("invalid_message")
+                            else response(input(type, payload.toString()))
+                        }
+                        "editor.snapshot" -> {
+                            if (payload.length() != 0) response("invalid_message")
+                            else snapshot().put("version", 1).put("type", "result")
                         }
                         "session.ping" -> response("pong")
                         else -> response("unknown_type")

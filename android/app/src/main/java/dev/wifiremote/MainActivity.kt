@@ -2,101 +2,143 @@
 package dev.wifiremote
 
 import android.app.Activity
-import android.os.*
+import android.app.AlertDialog
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.Color
+import android.os.*
 import android.provider.Settings
+import android.view.Gravity
+import android.view.View
 import android.view.WindowManager
 import android.view.inputmethod.InputMethodManager
 import android.widget.*
-import android.app.AlertDialog
-import android.graphics.Bitmap
-import android.graphics.Color
-import android.view.View
 
 class MainActivity : Activity() {
-    private lateinit var serviceStatus: TextView
-    private lateinit var status: TextView
-    private lateinit var code: TextView
-    private var qrDialog: AlertDialog? = null
+    private lateinit var ui: Ui
+    private lateinit var content: LinearLayout
     private var displayedCode: String? = null
     private var displayedAddress: String? = null
+    private var notice = ""
+    private var lastState = ""
     private val handler = Handler(Looper.getMainLooper())
     private val refresh = object : Runnable {
-        override fun run() {
-            serviceStatus.text = ReceiverState.status
-            val addresses = LanAddresses.find(this@MainActivity)
-            status.text = "${ReceiverState.status}\n\n手机地址：\n${addresses.joinToString("\n")}\n\n证书 SHA-256（手动配对备用）：\n${ReceiverState.identity?.fingerprint ?: "启动后显示"}"
-            displayedCode?.let {
-                if (!ReceiverState.pairing(this@MainActivity).isPending(it) || displayedAddress !in addresses) {
-                    clearQr()
-                    code.text = "二维码已使用或失效；需要时重新生成"
-                }
-            }
-            handler.postDelayed(this, 1500)
-        }
+        override fun run() { render(); handler.postDelayed(this, 1500) }
     }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
-        val layout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(32, 48, 32, 32) }
-        fun button(label: String, action: () -> Unit) { layout.addView(Button(this).apply { text = label; setOnClickListener { action() } }) }
-        layout.addView(TextView(this).apply { text = "WiFi Remote Input"; textSize = 24f })
-        layout.addView(TextView(this).apply { text = "两端连接同一 Wi-Fi。启用并选中此输入法后，在普通输入框接收中文。密码框始终拒绝。" })
-        button("1. 启用输入法") { startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS)) }
-        button("2. 选择输入法") { getSystemService(InputMethodManager::class.java).showInputMethodPicker() }
-        button("3. 启动接收") {
-            if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 1)
-            startForegroundService(Intent(this, ReceiverService::class.java))
+        ui = Ui(this)
+        content = ui.column(24)
+        val scroll = ScrollView(this).apply {
+            setBackgroundColor(ui.background); isFillViewport = true; addView(content)
+            setOnApplyWindowInsetsListener { view, insets ->
+                view.setPadding(insets.systemWindowInsetLeft, insets.systemWindowInsetTop, insets.systemWindowInsetRight, insets.systemWindowInsetBottom)
+                insets
+            }
         }
-        serviceStatus = TextView(this).apply { text = ReceiverState.status }; layout.addView(serviceStatus)
-        status = TextView(this).apply { setTextIsSelectable(true); textSize = 14f }; layout.addView(status)
-        status.visibility = View.GONE
-        button("显示 / 隐藏手动配对信息") { status.visibility = if (status.visibility == View.GONE) View.VISIBLE else View.GONE }
-        code = TextView(this).apply { textSize = 22f }; layout.addView(code)
-        button("4. 显示配对二维码") { showPairingQr() }
-        button("撤销已配对 Mac") { ReceiverState.pairing(this).revoke(); clearQr(); code.text = "已撤销全部配对" }
-        val stopIntent = Intent(this, ReceiverService::class.java)
-        button("停止接收") { stopService(stopIntent); clearQr(); code.text = "" }
-        layout.addView(EditText(this).apply { hint = "普通测试框：从 Mac 发送 你好，小米 13 👋"; inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE; minLines = 3 })
-        layout.addView(EditText(this).apply { hint = "密码测试框：远程输入应被拒绝"; inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD })
-        setContentView(ScrollView(this).apply { addView(layout) })
+        setContentView(scroll)
+        render()
+    }
+    private fun render(force: Boolean = false) {
+        val pairing = ReceiverState.pairing(this)
+        val peer = pairing.peerName()
+        val receiving = ReceiverState.status.startsWith("接收中")
+        val preparing = ReceiverState.status.startsWith("正在准备")
+        val connected = receiving && peer != null && peer in ReceiverState.connectedPeers
+        val manager = getSystemService(InputMethodManager::class.java)
+        val enabled = manager.enabledInputMethodList.any { it.packageName == packageName }
+        val selected = Settings.Secure.getString(contentResolver, Settings.Secure.DEFAULT_INPUT_METHOD)?.startsWith("$packageName/") == true
+        displayedCode?.let {
+            if (!pairing.isPending(it) || !receiving || displayedAddress !in LanAddresses.find(this)) {
+                clearQr(); notice = if (connected) "配对成功" else "二维码已使用或失效，需要时请重新生成"
+            }
+        }
+        val name = ReceiverState.deviceName(this)
+        val state = listOf(peer, receiving, preparing, connected, enabled, selected, name, displayedCode, notice, ReceiverState.status).joinToString("|")
+        if (!force && state == lastState) return
+        lastState = state
+        content.removeAllViews()
+        content.addView(ui.label("REMOTE INPUT", 13f, true).apply { letterSpacing = .14f })
+        content.addView(ui.orbit(connected))
+        fun centered(text: String, size: Float = 14f, muted: Boolean = false) = ui.label(text, size, muted).apply { gravity = Gravity.CENTER }
+        content.addView(centered(if (receiving) "●  接收已开启" else if (preparing) "正在准备连接…" else "接收已暂停", 13f).apply { setTextColor(ui.accent) })
+        content.addView(centered(if (connected) "键盘已接入" else if (peer != null) "等待电脑连接" else "连接你的 Mac", 26f).apply { setTypeface(typeface, android.graphics.Typeface.BOLD) })
+        content.addView(centered("${peer ?: "你的 Mac"}  →  $name", 15f, true))
+        content.addView(centered(if (connected && selected) "打开任意普通输入框，即可从 Mac 输入" else "手机与 Mac 请连接同一 Wi-Fi", 13f, true))
+        space(24)
+        if (displayedCode != null) {
+            val card = ui.card()
+            card.addView(centered("在 Mac 打开「扫码配对」", 18f))
+            card.addView(centered("将二维码对准 Mac 摄像头 · 两分钟内有效", 12f, true))
+            val matrix = PairingQr.matrix(displayedAddress!!, ReceiverState.identity!!.fingerprint, displayedCode!!)
+            val pixels = IntArray(matrix.width * matrix.height) { i -> if (matrix[i % matrix.width, i / matrix.width]) Color.BLACK else Color.WHITE }
+            val bitmap = Bitmap.createBitmap(pixels, matrix.width, matrix.height, Bitmap.Config.ARGB_8888)
+            val size = minOf(resources.displayMetrics.widthPixels - ui.dp(96), ui.dp(280)).coerceAtLeast(ui.dp(100))
+            card.addView(ImageView(this).apply { setImageBitmap(bitmap); contentDescription = "一次性配对二维码" }, LinearLayout.LayoutParams(size, size).apply { gravity = Gravity.CENTER_HORIZONTAL; topMargin = ui.dp(16); bottomMargin = ui.dp(12) })
+            card.addView(centered("配对后，Mac 可输入并同步当前普通输入框的内容。密码框始终受保护。", 12f, true))
+            card.addView(ui.button("收起二维码") { clearQr(); render(true) })
+            content.addView(card)
+        }
+        val setup = ui.card()
+        setup.addView(ui.label("输入法", 12f, true))
+        setup.addView(ui.label(if (selected) "已就绪  ✓" else if (enabled) "还需选择 Remote Input" else "首次使用需启用输入法", 17f).apply { if (selected) setTextColor(ui.accent) })
+        if (!selected) setup.addView(ui.button(if (enabled) "选择输入法" else "启用输入法") {
+            if (enabled) manager.showInputMethodPicker() else startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS))
+        })
+        content.addView(setup)
+        if (notice.isNotEmpty()) content.addView(centered(notice, 13f, true))
+        val primary = when {
+            preparing -> "正在开启…"
+            !receiving -> "开启接收"
+            peer == null && displayedCode == null -> "显示配对二维码"
+            else -> "暂停接收"
+        }
+        content.addView(ui.button(primary, true) {
+            when {
+                !receiving -> startReceiver()
+                peer == null && displayedCode == null -> showPairingQr()
+                else -> { stopService(Intent(this, ReceiverService::class.java)); clearQr(); render(true) }
+            }
+        }.apply { isEnabled = !preparing })
+        if (receiving && displayedCode == null && peer != null) content.addView(ui.button("连接另一台 Mac") { showPairingQr() })
+        if (receiving && peer == null && displayedCode == null) content.addView(ui.button("暂停接收") { stopService(Intent(this, ReceiverService::class.java)); clearQr(); render(true) })
+        space(24)
+        val deviceRow = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+        deviceRow.addView(ui.label("此手机\n$name", 13f, true), LinearLayout.LayoutParams(0, -2, 1f))
+        deviceRow.addView(ui.button("改名") { renamePhone() }.apply { layoutParams = LinearLayout.LayoutParams(ui.dp(72), ui.dp(48)) })
+        content.addView(deviceRow)
+        if (peer != null) content.addView(ui.button("忘记 $peer") {
+            AlertDialog.Builder(this).setTitle("忘记这台电脑？").setMessage("$peer 将无法继续输入，需要重新扫码配对。")
+                .setNegativeButton("取消", null).setPositiveButton("忘记") { _, _ -> pairing.revoke(); clearQr(); notice = "已忘记电脑"; render(true) }.show()
+        })
+        space(20)
+        content.addView(centered("本地加密连接 · 密码框保护", 12f, true))
+    }
+    private fun space(height: Int) { content.addView(View(this), LinearLayout.LayoutParams(1, ui.dp(height))) }
+    private fun startReceiver() {
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 1)
+        notice = ""; startForegroundService(Intent(this, ReceiverService::class.java))
+    }
+    private fun renamePhone() {
+        val field = EditText(this).apply { setText(ReceiverState.deviceName(this@MainActivity)); filters = arrayOf(android.text.InputFilter.LengthFilter(80)) }
+        AlertDialog.Builder(this).setTitle("手机名称").setView(field).setNegativeButton("取消", null)
+            .setNeutralButton("自动命名") { _, _ -> getSharedPreferences("devices", MODE_PRIVATE).edit().remove("deviceName").apply(); render(true) }
+            .setPositiveButton("保存") { _, _ ->
+                val name = field.text.toString().trim().filterNot { it.isISOControl() || it in '\u202a'..'\u202e' || it in '\u2066'..'\u2069' }
+                if (name.isNotEmpty()) getSharedPreferences("devices", MODE_PRIVATE).edit().putString("deviceName", name).apply()
+                render(true)
+            }.show()
     }
     private fun clearQr() {
-        qrDialog?.dismiss(); qrDialog = null
+        if (displayedCode != null) ReceiverState.pairing(this).cancel()
         displayedCode = null; displayedAddress = null
     }
     private fun showPairingQr() {
-        val identity = ReceiverState.identity
+        if (ReceiverState.identity == null || !ReceiverState.status.startsWith("接收中")) { notice = "请先开启接收"; render(true); return }
         val addresses = LanAddresses.find(this)
-        if (identity == null || !ReceiverState.status.startsWith("接收中")) { code.text = "请先启动接收，稍候再生成二维码"; return }
-        if (addresses.isEmpty()) { code.text = "未找到局域网地址，请连接 Wi-Fi 后重试"; return }
-        fun show(address: String) {
-            clearQr()
-            val pairingCode = ReceiverState.pairing(this).begin()
-            displayedCode = pairingCode; displayedAddress = address
-            val matrix = PairingQr.matrix(address, identity.fingerprint, pairingCode)
-            val pixels = IntArray(matrix.width * matrix.height) { i -> if (matrix[i % matrix.width, i / matrix.width]) Color.BLACK else Color.WHITE }
-            val bitmap = Bitmap.createBitmap(pixels, matrix.width, matrix.height, Bitmap.Config.ARGB_8888)
-            val content = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL; setPadding(24, 12, 24, 12)
-                addView(TextView(context).apply { text = "在 Mac 点击「扫码配对」，将此二维码对准 Mac 摄像头。\n两分钟内有效，使用一次即失效。" })
-                val size = minOf(resources.displayMetrics.widthPixels - 100, (360 * resources.displayMetrics.density).toInt())
-                addView(ImageView(context).apply { setImageBitmap(bitmap); contentDescription = "一次性配对二维码" }, LinearLayout.LayoutParams(size, size).apply { gravity = android.view.Gravity.CENTER_HORIZONTAL })
-                addView(TextView(context).apply { text = "手动配对备用码：$pairingCode\n地址：$address" })
-            }
-            val dialog = AlertDialog.Builder(this).setTitle("扫码配对").setView(content).setNegativeButton("关闭", null)
-            if (addresses.size > 1) dialog.setNeutralButton("更换地址") { _, _ ->
-                AlertDialog.Builder(this).setTitle("选择其他局域网地址")
-                    .setItems(addresses.toTypedArray()) { _, index -> show(addresses[index]) }.show()
-            }
-            qrDialog = dialog.create().also {
-                it.window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
-                it.show()
-                it.window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
-            }
-            code.text = "二维码已生成；在 Mac 扫描即可连接"
-        }
-        show(addresses.first())
+        if (addresses.isEmpty()) { notice = "未找到 Wi-Fi 网络，请连接后重试"; render(true); return }
+        clearQr(); displayedAddress = addresses.first(); displayedCode = ReceiverState.pairing(this).begin(); notice = ""; render(true)
     }
     override fun onResume() { super.onResume(); handler.post(refresh) }
     override fun onPause() { handler.removeCallbacks(refresh); super.onPause() }

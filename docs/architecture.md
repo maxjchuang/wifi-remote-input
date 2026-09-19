@@ -50,3 +50,7 @@ The foreground service declaration follows [Android's service-type requirements]
 ## QR pairing (0.2.0)
 
 Android renders the address, full certificate fingerprint and existing expiring pairing code using ZXing. Wi-Fi addresses are preferred; the phone allows selecting another local interface. macOS captures camera frames with AVFoundation, detects QR codes locally using Vision, validates the offer and runs the existing pinned TLS pairing exchange. No new listening port or unauthenticated input route is introduced. Camera access is requested only when the user opens the scanner.
+
+## Multi-phone client (0.5.0)
+
+`Client` owns device records and explicit input targets; `DeviceSession` owns one transport, authentication lifecycle, input pipeline, draft and editor snapshot. UI bindings follow the preview phone; input routes to a frozen set of recipients chosen at enqueue time. Switching/recipient edits invalidate queued work and the composition view. Every connection serializes its own authentication, input, snapshot and heartbeat requests. Failures propagate a group pause, not a replay or a rollback. Records store only display metadata; tokens remain keyed by certificate fingerprint in Keychain. Android stores the peer display name atomically with the credential hash and publishes authenticated connection state to its UI.

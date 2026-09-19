@@ -3,7 +3,7 @@ android {
     packaging { resources.excludes += "META-INF/versions/9/OSGI-INF/MANIFEST.MF" }
     namespace = "dev.wifiremote"
     compileSdk = 35
-    defaultConfig { applicationId = "dev.wifiremote"; minSdk = 29; targetSdk = 35; versionCode = 2; versionName = "0.2.0" }
+    defaultConfig { applicationId = "dev.wifiremote"; minSdk = 29; targetSdk = 35; versionCode = 9; versionName = "0.6.6" }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     testOptions { unitTests.isIncludeAndroidResources = true }
     kotlinOptions { jvmTarget = "17" }

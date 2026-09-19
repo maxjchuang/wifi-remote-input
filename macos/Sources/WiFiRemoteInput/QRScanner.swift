@@ -7,6 +7,7 @@ final class QRScanner: NSObject, ObservableObject, AVCaptureVideoDataOutputSampl
     @Published var message = "正在准备摄像头…"
     let session = AVCaptureSession()
     private let queue = DispatchQueue(label: "dev.wifiremote.qr-camera")
+    private var acceptingResult = false // Main-thread view lifecycle gate.
     private var wanted = false
     private var lastFrame = Date.distantPast
     private var delivered = false
@@ -15,6 +16,7 @@ final class QRScanner: NSObject, ObservableObject, AVCaptureVideoDataOutputSampl
     init(onScan: @escaping (PairingOffer) -> Void) { self.onScan = onScan }
     private func report(_ text: String) { DispatchQueue.main.async { self.message = text } }
     func start() {
+        acceptingResult = true
         queue.async {
             guard !self.wanted else { return }
             self.wanted = true
@@ -26,16 +28,16 @@ final class QRScanner: NSObject, ObservableObject, AVCaptureVideoDataOutputSampl
                 AVCaptureDevice.requestAccess(for: .video) { granted in
                     self.queue.async {
                         guard self.wanted else { return }
-                        if granted { self.configure() } else { self.report("未允许摄像头访问。可在系统设置中允许，或使用手动配对。") }
+                        if granted { self.configure() } else { self.report("未允许摄像头访问。请在系统设置中允许摄像头访问。") }
                     }
                 }
-            default: self.report("无法访问摄像头。请在系统设置 → 隐私与安全性 → 摄像头中允许此应用，或使用手动配对。")
+            default: self.report("无法访问摄像头。请在系统设置 → 隐私与安全性 → 摄像头中允许此应用。")
             }
         }
     }
     private func configure() {
         guard wanted, session.inputs.isEmpty else { return }
-        guard let camera = AVCaptureDevice.default(for: .video) else { report("未找到摄像头，请连接摄像头或使用手动配对。"); return }
+        guard let camera = AVCaptureDevice.default(for: .video) else { report("未找到摄像头，请连接摄像头后重试。"); return }
         do {
             let input = try AVCaptureDeviceInput(device: camera)
             let output = AVCaptureVideoDataOutput()
@@ -49,10 +51,11 @@ final class QRScanner: NSObject, ObservableObject, AVCaptureVideoDataOutputSampl
             session.addInput(input); session.addOutput(output)
             session.commitConfiguration()
             session.startRunning()
-            report(session.isRunning ? "将手机的配对二维码放入画面，识别后自动连接。" : "摄像头启动失败，请重试或使用手动配对。")
-        } catch { report("摄像头启动失败，请重试或使用手动配对。") }
+            report(session.isRunning ? "将手机的配对二维码放入画面，识别后自动连接。" : "摄像头启动失败，请重试。")
+        } catch { report("摄像头启动失败，请重试。") }
     }
     func stop() {
+        acceptingResult = false
         queue.async {
             self.wanted = false
             self.session.stopRunning()
@@ -69,8 +72,11 @@ final class QRScanner: NSObject, ObservableObject, AVCaptureVideoDataOutputSampl
         lastFrame = Date()
         guard let offer = try? PairingQR.decode(frame: frame) else { return }
         delivered = true
-        stop()
-        DispatchQueue.main.async { self.onScan(offer) }
+        DispatchQueue.main.async {
+            guard self.acceptingResult else { return }
+            self.stop()
+            self.onScan(offer)
+        }
     }
 }
 
@@ -92,22 +98,21 @@ private struct CameraPreview: NSViewRepresentable {
     func updateNSView(_ view: NSView, context: Context) { }
 }
 
-struct QRScannerSheet: View {
-    @Environment(\.dismiss) private var dismiss
+struct QRScannerPage: View {
     @StateObject private var scanner: QRScanner
     init(onScan: @escaping (PairingOffer) -> Void) { _scanner = StateObject(wrappedValue: QRScanner(onScan: onScan)) }
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("扫描手机二维码").font(.title2)
             Text("在手机 WiFi Remote Input 中点击「显示配对二维码」。")
-            CameraPreview(session: scanner.session).frame(width: 560, height: 315).background(Color.black)
+            CameraPreview(session: scanner.session).frame(maxWidth: .infinity).frame(height: 280).background(Color.black).clipShape(RoundedRectangle(cornerRadius: 14))
             Text(scanner.message).fixedSize(horizontal: false, vertical: true)
             HStack {
                 Text("画面仅在本机识别，不保存或上传。").font(.caption).foregroundStyle(.secondary)
-                Spacer()
-                Button("取消") { dismiss() }.keyboardShortcut(.cancelAction)
+
             }
-        }.padding(24).frame(width: 608)
+            Spacer(minLength: 0)
+        }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .onAppear { scanner.start() }
             .onDisappear { scanner.stop() }
     }

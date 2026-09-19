@@ -1,4 +1,8 @@
-<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="48dp" android:height="48dp" android:viewportWidth="48" android:viewportHeight="48">
-<path android:fillColor="#2563EB" android:pathData="M4,10h40v28h-40z"/>
-<path android:fillColor="#FFFFFF" android:pathData="M9,16h5v5h-5zM17,16h5v5h-5zM25,16h5v5h-5zM33,16h5v5h-5zM9,24h5v5h-5zM17,24h5v5h-5zM25,24h5v5h-5zM33,24h5v5h-5zM13,32h22v3h-22z"/>
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="24dp" android:height="24dp" android:viewportWidth="32" android:viewportHeight="32">
+<group android:scaleY="-1" android:translateY="32">
+<path android:fillColor="@android:color/transparent" android:strokeColor="#FFFFFF" android:strokeWidth="2" android:strokeLineCap="round" android:pathData="M19,20 L19,27 C19,29 20,30 22,30 L27,30 C29,30 30,29 30,27 L30,11 C30,9 29,8 27,8"/>
+<path android:fillColor="@android:color/transparent" android:strokeColor="#FFFFFF" android:strokeWidth="2" android:pathData="M5,3 L21,3 Q24,3 24,6 L24,14 Q24,17 21,17 L5,17 Q2,17 2,14 L2,6 Q2,3 5,3 Z"/>
+<path android:fillColor="#FFFFFF" android:pathData="M6.7,11 H8.3 Q9,11 9,11.7 V12.3 Q9,13 8.3,13 H6.7 Q6,13 6,12.3 V11.7 Q6,11 6.7,11 Z M11.7,11 H13.3 Q14,11 14,11.7 V12.3 Q14,13 13.3,13 H11.7 Q11,13 11,12.3 V11.7 Q11,11 11.7,11 Z M16.7,11 H18.3 Q19,11 19,11.7 V12.3 Q19,13 18.3,13 H16.7 Q16,13 16,12.3 V11.7 Q16,11 16.7,11 Z M8,6 H18 Q19,6 19,7 Q19,8 18,8 H8 Q7,8 7,7 Q7,6 8,6 Z"/>
+</group>
 </vector>

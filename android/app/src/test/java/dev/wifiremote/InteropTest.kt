@@ -41,6 +41,7 @@ class InteropTest {
         assumeTrue("Set WRI_SWIFT_SMOKE to run real Swift/JVM interoperability test", executable != null)
         val directory = Files.createTempDirectory("wri-interop").toFile()
         var server: InputServer? = null
+        var second: InputServer? = null
         try {
             val identity = Identity(directory)
             assertEquals(identity.fingerprint, Identity(directory).fingerprint)
@@ -49,14 +50,35 @@ class InteropTest {
             val code = pairing.begin()
             val ready = CountDownLatch(1)
             val inputs = Collections.synchronizedList(mutableListOf<Pair<String, String>>())
-            server = InputServer(InetSocketAddress("127.0.0.1", 0), identity.tls, pairing, { type, value, authorized -> check(authorized()); inputs.add(type to value); "ok" }, { ready.countDown() })
+            var editorText = "手机已有文字"
+            server = InputServer(InetSocketAddress("127.0.0.1", 0), identity.tls, pairing, { type, value, authorized ->
+                check(authorized())
+                if (type == "editor.edit") {
+                    val edit = JSONObject(value)
+                    if (edit.getString("editorId") != "1" || edit.getString("expectedHash") != Secrets.hash(editorText + "\u0000" + editorText.length + "," + editorText.length)) "editor_conflict"
+                    else { editorText = edit.getString("text"); inputs.add(type to value); "ok" }
+                } else { inputs.add(type to value); if (type == "text.commit") editorText += value; "ok" }
+            }, { ready.countDown() }, snapshot = { authorized ->
+                check(authorized())
+                JSONObject().put("status", "snapshot").put("editorId", "1").put("text", editorText)
+                    .put("selectionStart", editorText.length).put("selectionEnd", editorText.length)
+            }, deviceName = { "测试手机 A" })
             server.start()
             assertTrue(ready.await(10, TimeUnit.SECONDS))
             val qr = PairingQr.matrix("127.0.0.1:${server.port}", identity.fingerprint, code)
             val qrFile = File(directory, "pairing.png")
             writeQrPng(qr, qrFile)
+            val secondIdentity = Identity(File(directory, "second").apply { mkdirs() })
+            var secondHash: String? = null
+            val secondPairing = Pairing({ secondHash }, { secondHash = it })
+            val secondCode = secondPairing.begin()
+            val secondReady = CountDownLatch(1)
+            val secondInputs = Collections.synchronizedList(mutableListOf<Pair<String, String>>())
+            second = InputServer(InetSocketAddress("127.0.0.1", 0), secondIdentity.tls, secondPairing,
+                { t, v, authorized -> check(authorized()); secondInputs.add(t to v); "ok" }, { secondReady.countDown() }, deviceName = { "测试手机 B" })
+            second.start(); assertTrue(secondReady.await(10, TimeUnit.SECONDS))
             val fixture = File(directory, "fixture.json")
-            fixture.writeText(JSONObject().put("address", "127.0.0.1:${server.port}").put("fingerprint", identity.fingerprint).put("qrImage", qrFile.absolutePath).toString())
+            fixture.writeText(JSONObject().put("address", "127.0.0.1:${server.port}").put("fingerprint", identity.fingerprint).put("qrImage", qrFile.absolutePath).put("secondAddress", "127.0.0.1:${second.port}").put("secondPin", secondIdentity.fingerprint).put("secondCode", secondCode).toString())
             fixture.setReadable(false, false); fixture.setReadable(true, true)
             val process = ProcessBuilder(executable!!, fixture.absolutePath).redirectErrorStream(true).start()
             if (!process.waitFor(45, TimeUnit.SECONDS)) { process.destroyForcibly(); fail("Swift integration timed out") }
@@ -64,7 +86,10 @@ class InteropTest {
             assertEquals(output, 0, process.exitValue())
             println(output)
             assertEquals("你好，小米 13 👋", inputs.first().second)
-            assertEquals(listOf("Enter", "Backspace", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"), inputs.drop(1).map { it.second })
-        } finally { server?.shutdown(); directory.deleteRecursively() }
+            assertEquals(listOf("Enter", "Backspace", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"), inputs.drop(1).take(6).map { it.second })
+            assertEquals("同步中文 👋", inputs.last().second)
+            assertEquals(listOf("仅 B", "同步中文 👋"), secondInputs.map { it.second })
+            assertEquals("测试 Mac", pairing.peerName()); assertEquals("测试 Mac", secondPairing.peerName())
+        } finally { second?.shutdown(); server?.shutdown(); directory.deleteRecursively() }
     }
 }
