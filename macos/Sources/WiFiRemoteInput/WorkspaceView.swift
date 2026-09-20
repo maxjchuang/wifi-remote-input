@@ -80,6 +80,7 @@ struct WorkspaceView: View {
                         Button("连接勾选的手机") { client.connectTargets() }.buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(accent)
                     }
                 }.frame(maxHeight: .infinity)
+                ShortcutControl(shortcut: presentation.shortcut)
                 Rectangle().fill(lineColor).frame(height: 1)
                 Label("本地加密连接", systemImage: "lock.shield").font(.system(size: 10)).foregroundStyle(.secondary).padding(.horizontal, 10)
             }.padding(.horizontal, 16).padding(.vertical, 30).frame(width: 190)

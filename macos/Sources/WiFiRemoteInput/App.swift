@@ -225,5 +225,8 @@ extension Transport: SessionConnection {}
                 .background(WorkspaceRegistration(presentation: presentation)) }
             .windowResizability(.contentSize)
             .windowStyle(.hiddenTitleBar)
+            .commands { CommandGroup(after: .appInfo) {
+                Button("呼出输入小窗") { presentation.summonInput() }
+            } }
     }
 }

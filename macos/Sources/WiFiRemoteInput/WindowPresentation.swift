@@ -7,11 +7,14 @@ import RemoteCore
 @MainActor final class WindowPresentation: NSObject, ObservableObject, NSPopoverDelegate {
     enum Panel { case input, scanner }
     @Published var requestedPanel: Panel?
+    let shortcut = GlobalShortcut()
     private let client: Client
     private var statusItem: NSStatusItem?
     private var popover: NSPopover?
     private var heartbeat: Timer?
     private var workspace: NSWindow?
+    private var activationObserver: NSObjectProtocol?
+    private var popoverKeys: Any?
 
     init(client: Client) { self.client = client; super.init() }
     func register(_ window: NSWindow) {
@@ -23,6 +26,7 @@ import RemoteCore
         item.button?.target = self
         item.button?.action = #selector(togglePopover(_:))
         statusItem = item
+        shortcut.action = { [weak self] in self?.summonInput() }
         heartbeat = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in await self?.client.checkConnection() }
         }
@@ -52,6 +56,50 @@ import RemoteCore
         // Activation can close this transient popover and briefly raise the workspace
         // on another display. Only explicit showWorkspace() activates the application.
         panel.contentViewController?.view.window?.makeKey()
+        // Local to this popover only. Leave Escape to the IME while selecting text.
+        if let popoverKeys { NSEvent.removeMonitor(popoverKeys) }
+        popoverKeys = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self, weak panel] event in
+            guard event.keyCode == 53, let self, let panel, panel.isShown,
+                  let window = panel.contentViewController?.view.window,
+                  event.window === window, window.isKeyWindow else { return event }
+            if let editor = window.firstResponder as? NSTextView, editor.hasMarkedText() { return event }
+            self.client.pauseInput()
+            panel.performClose(nil)
+            return nil
+        }
+    }
+
+    func summonInput() {
+        // Hide the workspace before activation so it cannot flash on another display.
+        client.pauseInput()
+        workspace?.orderOut(nil)
+        if let activationObserver { NotificationCenter.default.removeObserver(activationObserver); self.activationObserver = nil }
+        if NSApp.isActive {
+            DispatchQueue.main.async { [weak self] in self?.showFocusedPopover() }
+        } else {
+            activationObserver = NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: NSApp, queue: .main) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    if let observer = self.activationObserver { NotificationCenter.default.removeObserver(observer); self.activationObserver = nil }
+                    self.showFocusedPopover()
+                }
+            }
+            NSApp.activate(ignoringOtherApps: true)
+        }
+    }
+    private func showFocusedPopover() {
+        showPopover()
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let root = self.popover?.contentViewController?.view,
+                  let window = root.window else { return }
+            window.makeKey()
+            func editor(in view: NSView) -> NSTextView? {
+                if let text = view as? NSTextView { return text }
+                for child in view.subviews { if let found = editor(in: child) { return found } }
+                return nil
+            }
+            if let input = editor(in: root) { window.makeFirstResponder(input) }
+        }
     }
 
     func showWorkspace(panel: Panel? = .input) {
@@ -62,7 +110,10 @@ import RemoteCore
         // Wait for the workspace to become key before navigating to the scanner.
         DispatchQueue.main.async { self.requestedPanel = panel }
     }
-    func popoverWillClose(_ notification: Notification) { client.pauseInput() }
+    func popoverWillClose(_ notification: Notification) {
+        client.pauseInput()
+        if let popoverKeys { NSEvent.removeMonitor(popoverKeys); self.popoverKeys = nil }
+    }
     func quit() { client.disconnectAll(); NSApp.terminate(nil) }
 }
 
