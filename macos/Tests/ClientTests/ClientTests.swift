@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import XCTest
 import RemoteCore
+import AppKit
 @testable import WiFiRemoteInput
 
 private final class FakeConnection: SessionConnection {
     var inputs: [InputEvent] = []
+    var controls: [[String: String]] = []
     var name: String
     var inputDelay: UInt64 = 0
     var rejection: String?
+    var snapshot: [String: Any] = ["status": "no_editor"]
     var lastComputerName: String?
     init(_ name: String) { self.name = name }
     func close() {}
@@ -17,15 +20,68 @@ private final class FakeConnection: SessionConnection {
             return ["status": type == "pair" ? "paired" : "authenticated", "token": "test-only", "deviceName": name]
         }
         if type == "session.ping" { return ["status": "pong"] }
-        if type == "editor.snapshot" { return ["status": "no_editor"] }
+        if type == "editor.snapshot" { return snapshot }
         if inputDelay > 0 { try await Task.sleep(nanoseconds: inputDelay) }
         if let rejection { return ["status": rejection] }
-        inputs.append(InputEvent(type, payload["text"] ?? payload["key"]!))
+        if type == "control.action" { controls.append(payload) }
+        inputs.append(InputEvent(type, payload["text"] ?? payload["action"] ?? payload["key"]!))
         return ["status": "ok"]
     }
 }
 
+private final class SnapshotTestWindow: NSWindow {
+    override var isKeyWindow: Bool { true }
+    override var isVisible: Bool { true }
+}
+
 final class ClientTests: XCTestCase {
+    @MainActor func testControlTypingResumesFromSnapshotWithoutBroadcastAndMissingEditorKeepsMouse() async throws {
+        let (client, fakes, _) = fixture(); try await connect(client)
+        client.startControl(mouse: true)
+        try await Task.sleep(nanoseconds: 60_000_000)
+        let window = SnapshotTestWindow(contentRect: NSRect(x: 0, y: 0, width: 320, height: 200), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let view = NSView(frame: NSRect(x: 0, y: 0, width: 320, height: 200))
+        window.contentView = view; client.active.registerInputView(view)
+        await client.active.refreshSnapshot()
+        XCTAssertTrue(client.active.controlActive); XCTAssertTrue(client.active.paused)
+        fakes[0].snapshot = ["status": "snapshot", "editorId": "one", "text": "你好", "selectionStart": 2, "selectionEnd": 2]
+        await client.active.refreshSnapshot()
+        XCTAssertFalse(client.active.paused); XCTAssertEqual(client.active.editorSnapshot?.text, "你好")
+        client.active.send("text.commit", value: "中文")
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertTrue(fakes[0].inputs.contains { $0.type == "text.commit" && $0.value == "中文" })
+        XCTAssertFalse(fakes[1].inputs.contains { $0.type == "text.commit" })
+        for status in ["password_blocked", "no_editor"] {
+            fakes[0].snapshot = ["status": status]
+            await client.active.refreshSnapshot()
+            XCTAssertTrue(client.active.controlActive); XCTAssertTrue(client.active.paused)
+            XCTAssertNil(client.active.editorSnapshot)
+        }
+        client.disconnectAll(); window.close()
+    }
+
+    @MainActor func testCaptureStartsAfterDelayedAcknowledgementWithoutGlobalCursorHitTest() async throws {
+        let (client, fakes, _) = fixture(); try await connect(client)
+        fakes[0].inputDelay = 80_000_000
+        let window = SnapshotTestWindow(contentRect: NSRect(x: -2400, y: 1200, width: 320, height: 200), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let view = ControlKeysView(frame: NSRect(x: 0, y: 0, width: 320, height: 200))
+        var associations: [Bool] = []
+        view.mouseCapture = MouseCaptureLease(associate: { associations.append($0); return true }, hide: {}, show: {})
+        view.client = client; view.configureEditor(); window.contentView = view
+        view.requestCapture()
+        try await Task.sleep(nanoseconds: 250_000_000)
+        XCTAssertTrue(view.capturing); XCTAssertTrue(client.active.controlActive)
+        XCTAssertEqual(associations, [false])
+        // Focus loss while the server is confirming must not resurrect capture.
+        view.stop()
+        XCTAssertEqual(associations, [false, true])
+        view.requestCapture(); _ = window.makeFirstResponder(nil)
+        try await Task.sleep(nanoseconds: 250_000_000)
+        XCTAssertFalse(view.capturing); XCTAssertEqual(associations, [false, true])
+        view.stop(); client.disconnectAll(); window.close()
+    }
     @MainActor private func fixture() -> (Client, [FakeConnection], UserDefaults) {
         let defaults = UserDefaults(suiteName: "wri-tests-" + UUID().uuidString)!
         let records = [DeviceRecord(name: "Phone A", address: "192.168.1.2:8765", fingerprint: String(repeating: "a", count: 64)),
@@ -41,6 +97,114 @@ final class ClientTests: XCTestCase {
         for device in client.devices { device.connect() }
         try await Task.sleep(nanoseconds: 30_000_000)
         XCTAssertTrue(client.devices.allSatisfy(\.connected))
+    }
+    @MainActor func testCancelledDragKeepsCaptureAndWaitsForReleaseBeforeNewTouch() async throws {
+        let (client, fakes, _) = fixture(); try await connect(client)
+        var states: [Bool] = []
+        let observer = client.active.pointerControlStates.sink { states.append($0) }
+        client.startControl(mouse: true); try await Task.sleep(nanoseconds: 50_000_000)
+        client.active.sendControl("pointer_down", coordinates: ["x": "100", "y": "100"])
+        try await Task.sleep(nanoseconds: 60_000_000)
+        fakes[0].rejection = "touch_not_down"
+        client.active.sendControl("pointer_drag", coordinates: ["x": "200", "y": "200"])
+        try await Task.sleep(nanoseconds: 60_000_000)
+        XCTAssertTrue(client.active.controlActive); XCTAssertEqual(states, [false, true])
+        fakes[0].rejection = nil
+        client.active.sendControl("pointer_drag", coordinates: ["x": "300", "y": "300"])
+        client.active.sendControl("ping")
+        try await Task.sleep(nanoseconds: 120_000_000)
+        XCTAssertEqual(fakes[0].controls.last?["action"], "pointer_move")
+        XCTAssertTrue(client.active.controlStatus.contains("松开左键"))
+        client.active.sendControl("pointer_up", coordinates: ["x": "300", "y": "300"])
+        client.active.sendControl("pointer_down", coordinates: ["x": "400", "y": "400"])
+        client.active.sendControl("pointer_drag", coordinates: ["x": "500", "y": "500"])
+        try await Task.sleep(nanoseconds: 180_000_000)
+        XCTAssertEqual(fakes[0].controls.suffix(3).compactMap { $0["action"] }, ["pointer_up", "pointer_down", "pointer_drag"])
+        XCTAssertFalse(fakes[0].controls.contains { $0["action"] == "stop" })
+        XCTAssertEqual(states, [false, true]); XCTAssertFalse(client.active.controlStatus.contains("取消"))
+        client.pauseInput(); XCTAssertEqual(states, [false, true, false])
+        observer.cancel(); client.disconnectAll()
+    }
+    @MainActor func testDragCoalescingPreservesPressAndReleaseBoundaries() async throws {
+        let (client, fakes, _) = fixture(); try await connect(client)
+        client.startControl(mouse: true); try await Task.sleep(nanoseconds: 50_000_000)
+        fakes[0].inputDelay = 50_000_000
+        client.active.sendControl("pointer_down", coordinates: ["x": "100", "y": "100"])
+        for x in [200, 300, 400] { client.active.sendControl("pointer_drag", coordinates: ["x": String(x), "y": "200"]) }
+        client.active.sendControl("pointer_up", coordinates: ["x": "500", "y": "300"])
+        client.active.sendControl("pointer_move", coordinates: ["x": "600", "y": "400"])
+        try await Task.sleep(nanoseconds: 350_000_000)
+        XCTAssertEqual(fakes[0].controls.compactMap { $0["action"] }, ["pointer_start", "pointer_down", "pointer_drag", "pointer_up", "pointer_move"])
+        XCTAssertEqual(fakes[0].controls.compactMap { $0["x"] }, ["100", "400", "500", "600"])
+        XCTAssertTrue(fakes[1].controls.isEmpty); client.disconnectAll()
+    }
+    @MainActor func testSuccessfulMovementAndHeartbeatDoNotRestartMouseCapture() async throws {
+        let (client, _, _) = fixture(); try await connect(client)
+        var states: [Bool] = []
+        let observer = client.active.pointerControlStates.sink { states.append($0) }
+        client.startControl(mouse: true)
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(states, [false, true])
+        for action in ["pointer_move", "ping", "pointer_tap", "back", "ping"] {
+            client.active.sendControl(action, coordinates: action.hasPrefix("pointer_") ? ["x": "5000", "y": "5000"] : [:])
+            try await Task.sleep(nanoseconds: 65_000_000)
+        }
+        XCTAssertTrue(client.active.controlActive)
+        XCTAssertEqual(states, [false, true], "Acknowledgements must not restart an existing capture")
+        client.pauseInput()
+        try await Task.sleep(nanoseconds: 70_000_000)
+        XCTAssertEqual(states, [false, true, false])
+        observer.cancel(); client.disconnectAll()
+    }
+    @MainActor func testPointerMovementCoalescesWithoutReorderingClicksAndStopDropsQueue() async throws {
+        let (client, fakes, _) = fixture(); try await connect(client)
+        client.setControlMode(true); client.startControl(mouse: true)
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertTrue(client.active.pointerMode)
+        fakes[0].inputDelay = 60_000_000
+        client.active.sendControl("pointer_move", coordinates: ["x": "100", "y": "100"])
+        for x in [200, 300] { client.active.sendControl("pointer_move", coordinates: ["x": String(x), "y": "100"]) }
+        client.active.sendControl("pointer_tap", coordinates: ["x": "400", "y": "200"])
+        client.active.sendControl("pointer_move", coordinates: ["x": "500", "y": "200"])
+        try await Task.sleep(nanoseconds: 350_000_000)
+        XCTAssertEqual(fakes[0].controls.compactMap { $0["x"] }, ["100", "300", "400", "500"])
+        XCTAssertTrue(fakes[1].controls.isEmpty)
+        client.active.sendControl("pointer_move", coordinates: ["x": "600", "y": "200"])
+        client.active.sendControl("pointer_tap", coordinates: ["x": "700", "y": "200"])
+        client.pauseInput()
+        try await Task.sleep(nanoseconds: 250_000_000)
+        XCTAssertFalse(client.active.controlActive); XCTAssertFalse(client.active.pointerMode)
+        XCTAssertFalse(fakes[0].controls.contains { $0["x"] == "700" })
+        XCTAssertEqual(fakes[0].controls.last?["action"], "stop")
+        client.disconnectAll()
+    }
+    @MainActor func testControlsNeverBroadcastAndDeviceSwitchStopsPreviousPhone() async throws {
+        let (client, fakes, _) = fixture(); try await connect(client)
+        client.setBroadcast(true); client.setControlMode(true); client.startControl()
+        try await Task.sleep(nanoseconds: 40_000_000)
+        XCTAssertTrue(client.active.controlActive); XCTAssertTrue(client.paused)
+        client.active.sendControl("home")
+        try await Task.sleep(nanoseconds: 40_000_000)
+        XCTAssertEqual(fakes[0].inputs.map(\.value), ["start", "home"])
+        XCTAssertTrue(fakes[1].inputs.isEmpty)
+        client.select(client.devices[1])
+        try await Task.sleep(nanoseconds: 40_000_000)
+        XCTAssertFalse(client.devices[0].controlActive)
+        XCTAssertEqual(fakes[0].inputs.last?.value, "stop")
+        client.disconnectAll()
+    }
+    @MainActor func testControlPermissionFailureAndPauseDuringStartCannotReactivate() async throws {
+        let (client, fakes, _) = fixture(); try await connect(client)
+        fakes[0].rejection = "accessibility_disabled"
+        client.startControl(); try await Task.sleep(nanoseconds: 40_000_000)
+        XCTAssertFalse(client.active.controlActive)
+        XCTAssertTrue(client.active.controlStatus.contains("开启辅助功能"))
+        fakes[0].rejection = nil; fakes[0].inputDelay = 100_000_000
+        client.startControl(); try await Task.sleep(nanoseconds: 20_000_000)
+        client.pauseInput(); try await Task.sleep(nanoseconds: 350_000_000)
+        XCTAssertFalse(client.active.controlActive)
+        XCTAssertEqual(fakes[0].inputs.last?.value, "stop")
+        client.disconnectAll()
     }
     @MainActor func testFocusResumeIsNotBlockedByAnInFlightAcknowledgement() async throws {
         let (client, fakes, _) = fixture(); try await connect(client)
@@ -131,4 +295,21 @@ final class ClientTests: XCTestCase {
         client.forget(); XCTAssertEqual(client.devices.count, 1); XCTAssertEqual(client.devices.first?.fingerprint, saved[1].fingerprint)
         client.disconnectAll()
     }
+    @MainActor func testPopoverConnectsSavedTargetsOnceAndKeepsInputPaused() async throws {
+        let (client, _, _) = fixture()
+        client.connectFromPopover(); client.connectFromPopover()
+        try await Task.sleep(nanoseconds: 40_000_000)
+        XCTAssertTrue(client.active.connected); XCTAssertTrue(client.paused)
+        XCTAssertFalse(client.devices[1].connected)
+        client.connectFromPopover()
+        XCTAssertTrue(client.active.connected); XCTAssertFalse(client.active.busy)
+        client.setBroadcast(true); client.toggleRecipient(client.devices[1])
+        client.connectFromPopover()
+        try await Task.sleep(nanoseconds: 40_000_000)
+        XCTAssertTrue(client.devices.allSatisfy(\.connected)); XCTAssertTrue(client.paused)
+        client.newDevice(); client.connectFromPopover()
+        XCTAssertFalse(client.hasSavedInputTargets); XCTAssertFalse(client.active.busy)
+        client.disconnectAll()
+    }
+
 }

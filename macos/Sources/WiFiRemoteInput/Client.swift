@@ -5,6 +5,9 @@ import RemoteCore
 
 /// Each phone owns a separate authenticated transport, queue and editor snapshot.
 @MainActor final class Client: ObservableObject {
+    @Published var controlMode = false
+    func setControlMode(_ enabled: Bool) { pauseInput(); controlMode = enabled }
+    func startControl(mouse: Bool = false) { pauseInput(); active.sendControl(mouse ? "pointer_start" : "start") }
     @Published private(set) var devices: [DeviceSession] = []
     @Published private(set) var active: DeviceSession
     @Published private(set) var broadcasting = false
@@ -14,6 +17,25 @@ import RemoteCore
     }
     private var subscriptions: [String: AnyCancellable] = [:]
     private var groupStatus: String?
+    private var discovered: [String: (address: String, seen: Date)] = [:]
+    private var lastDiscoveryAttempt: [String: Date] = [:]
+    func discoveredDevice(fingerprint: String, address: String) {
+        guard devices.contains(where: { $0.fingerprint == fingerprint }),
+              (try? Transport.endpoint(address: address)) != nil else { return }
+        discovered[fingerprint] = (address, Date())
+        reconnectDiscovered()
+    }
+    private func candidate(for device: DeviceSession) -> String? {
+        guard let hint = discovered[device.fingerprint], Date().timeIntervalSince(hint.seen) < 35 else { return nil }
+        return hint.address
+    }
+    private func reconnectDiscovered() {
+        for device in devices where device.wantsReconnect && !device.connected && !device.busy {
+            guard let address = candidate(for: device), Date().timeIntervalSince(lastDiscoveryAttempt[device.id] ?? .distantPast) >= 30 else { continue }
+            lastDiscoveryAttempt[device.id] = Date()
+            device.connect(candidateAddress: address)
+        }
+    }
     private let defaults: UserDefaults
     private let makeSession: @MainActor (DeviceRecord?) -> DeviceSession
     init(defaults: UserDefaults = .standard, makeSession: @escaping @MainActor (DeviceRecord?) -> DeviceSession = { DeviceSession(record: $0) }) {
@@ -89,7 +111,6 @@ import RemoteCore
     var address: String { get { active.address } set { active.address = newValue } }
     var fingerprint: String { get { active.fingerprint } set { active.fingerprint = newValue } }
     var code: String { get { active.code } set { active.code = newValue } }
-    var text: String { get { active.text } set { active.text = newValue } }
     var editorSnapshot: EditorSnapshot? { active.editorSnapshot }
     var mirrorPending: Bool { active.mirrorPending }
     var enterMode: String { get { active.enterMode } set { active.enterMode = newValue; persist() } }
@@ -102,7 +123,6 @@ import RemoteCore
         return ("已暂停：手机未选中输入框", "请在「\(device.name)」点击要输入的位置，并选择 WiFi Remote Input 输入法，再回到这里继续。")
     }
     var snapshotStatus: String { active.snapshotStatus }
-    var autoMode: Bool { active.autoMode }
     var paused: Bool { targets.isEmpty || targets.contains { $0.paused } }
     var focusToken: Int { active.focusToken }
     var connected: Bool { plan.ready(available: Set(targets.filter { $0.connected }.map(\.id))) }
@@ -116,7 +136,7 @@ import RemoteCore
         }
         return groupStatus ?? active.status
     }
-    var acceptsAutoInput: Bool { autoMode && !paused && plan.ready(available: Set(targets.filter { $0.connected }.map(\.id))) }
+    var acceptsAutoInput: Bool { !controlMode && !paused && plan.ready(available: Set(targets.filter { $0.connected }.map(\.id))) }
     func useAutomaticComputerName() {
         computerName = DeviceNames.computerName()
         defaults.removeObject(forKey: "computerName")
@@ -124,7 +144,7 @@ import RemoteCore
     func registerInputView(_ view: NSView) { active.registerInputView(view) }
     func clearSnapshot(_ message: String = "等待同步手机输入框") { active.clearSnapshot(message) }
     func refreshSnapshot() async { await active.refreshSnapshot() }
-    func pauseInput() { for device in devices + [active] { device.pauseInput(notify: false) }; groupStatus = nil }
+    func pauseInput() { for device in devices + [active] { device.pauseInput(notify: false); device.stopControl() }; groupStatus = nil }
     func resumeInput() {
         let available = Set(targets.filter { $0.connected }.map(\.id))
         guard plan.ready(available: available) else {
@@ -135,12 +155,19 @@ import RemoteCore
         // The preview phone can differ from the broadcast recipients.
         if !targetIDs.contains(active.id) { active.focusToken += 1 }
     }
-    func setMode(_ automatic: Bool) { pauseInput(); active.setMode(automatic); active.pauseInput(notify: false); groupStatus = nil }
     func disconnect() { active.disconnect(); groupStatus = nil }
     func disconnectAll() { for device in devices + [active] { device.disconnect() } }
     func pair(_ offer: PairingOffer) { newDevice(); active.pair(offer) }
-    func connect() { groupStatus = nil; active.connect() }
-    func connectTargets() { for device in targets where !device.connected && !device.busy { device.connect() } }
+    func connect() { groupStatus = nil; active.connect(candidateAddress: candidate(for: active)) }
+    var hasSavedInputTargets: Bool { !targets.isEmpty && targets.allSatisfy { target in devices.contains { $0.id == target.id } } }
+    func connectFromPopover() {
+        guard hasSavedInputTargets else { return }
+        groupStatus = nil
+        for device in targets where !device.connected && !device.busy {
+            device.connect(candidateAddress: candidate(for: device))
+        }
+    }
+    func connectTargets() { for device in targets where !device.connected && !device.busy { device.connect(candidateAddress: candidate(for: device)) } }
     func send(_ type: String, value: String) {
         let recipientsNow = targets
         guard plan.ready(available: Set(recipientsNow.filter { $0.connected && !$0.paused }.map(\.id))) else {
@@ -149,9 +176,10 @@ import RemoteCore
         groupStatus = nil
         for device in recipientsNow { device.send(type, value: value) }
     }
-    func checkConnection() async { for device in devices { await device.checkConnection() } }
+    func checkConnection() async { for device in devices { await device.checkConnection() }; reconnectDiscovered() }
     func forget(_ device: DeviceSession? = nil) {
         let forgotten = device ?? active
+        discovered.removeValue(forKey: forgotten.fingerprint); lastDiscoveryAttempt.removeValue(forKey: forgotten.id)
         pauseInput(); forgotten.forget(); devices.removeAll { $0.id == forgotten.id }; recipients.remove(forgotten.id)
         subscriptions.removeValue(forKey: forgotten.id)
         if recipients.isEmpty { broadcasting = false }

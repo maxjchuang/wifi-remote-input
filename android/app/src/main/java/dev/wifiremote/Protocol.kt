@@ -86,6 +86,15 @@ class Protocol(private val pairing: Pairing, private val snapshot: () -> JSONObj
                 else -> {
                     if (credential?.let(pairing::authenticate) != true) return response("unauthorized")
                     when (type) {
+                        "control.action" -> {
+                            val action = string("action")
+                            if (action in setOf("pointer_move", "pointer_tap", "pointer_down", "pointer_drag", "pointer_up")) {
+                                val x = string("x").toIntOrNull(); val y = string("y").toIntOrNull()
+                                if (payload.length() != 3 || x == null || y == null || x !in 0..10000 || y !in 0..10000) response("invalid_action")
+                                else response(input(type, payload.toString()))
+                            } else if (payload.length() != 1 || action !in setOf("pointer_start", "start", "stop", "ping", "back", "home", "recents", "next", "previous", "left", "right", "up", "down", "click", "long_click", "scroll_up", "scroll_down")) response("invalid_action")
+                            else response(input(type, action))
+                        }
                         "text.commit" -> {
                             val text = string("text")
                             if (text.isEmpty() || text.length > 4096) response("invalid_text") else response(input(type, text))

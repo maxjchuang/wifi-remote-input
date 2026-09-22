@@ -183,3 +183,93 @@ Swift 31 项测试通过，新增注册冲突／原绑定保留、禁用与保�
 ## macOS 0.6.8：Esc 收起小窗（2026-09-20）
 
 Esc 在小窗内暂停输入并关闭弹窗，未连接或已暂停时同样生效。只处理当前小窗的本地按键事件；编辑器有中文组合文本时交还输入法处理，不影响其他窗口或应用。关闭时移除事件监听。Release 构建及签名校验通过，UI 实际呼出并聚焦小窗后按 Esc，确认弹窗消失。IP 变化仍需重新扫码；局域网自动发现尚未实现。
+
+## 0.7.0：局域网自动发现与地址更新（2026-09-20）
+
+Android 接收服务启动后发布 NSD 服务，停止时撤销；Mac 发现已配对证书标识的新地址后仍按原证书与密钥认证，成功才持久化地址。网络中断允许重新寻找，手动断开／忘记阻止自动重连，重连后输入暂停且不重放队列。
+
+Swift 32 项、Android 31 项共 63 项测试通过，无跳过；含实际 Swift ↔ JVM TLS/WebSocket 互通。新增未知设备／公网地址拒绝、认证失败不覆盖旧地址、认证成功后保存并暂停、显式断开／忘记不自动重连，以及广播元数据不包含授权凭据的检查。Mac 实际运行 DeviceDiscovery，使用本机临时 Bonjour 服务验证发现、TXT 匹配及私有 IPv4 地址解析成功；测试服务随后撤销。Android lint 0 错误、5 警告，双方构建与签名验证通过；Mac 新版本已启动。
+
+上述验证不替代小米 13 的 NSD 实机与换 Wi-Fi 验收。请覆盖安装 Android 0.7.0，开启接收，Mac 连接一次后让两端切到同一个新 Wi-Fi，等待发现和认证，检查设备仍为同一条记录、输入保持暂停、点击后可继续。访客网络隔离或组播被阻止时可能无法自动发现。安装包为 artifacts/WiFiRemoteInput-0.7.0-debug.apk 与 artifacts/WiFiRemoteInput-0.7.0-macOS.zip。
+
+
+## macOS 0.7.1：小窗自动连接（2026-09-20）
+
+小窗显示后自动连接当前已保存目标；多机模式仅连接勾选且尚未连接的手机，已连接或正在连接的设备不重复发起请求。未连接时显示连接按钮，连接中禁用，未配对时转到扫码页；在小窗切换手机后也会尝试连接。成功后仍暂停输入，不自动发送草稿。Swift 33 项测试、Release 构建和签名验证通过。Android 继续使用 0.7.0。
+
+## 0.8.0 — 可选手机控制（2026-09-21）
+
+- Mac 工作台／小窗增加文字输入与手机控制切换；焦点限定在控制区，Esc、窗口失焦、切换手机或页面时暂停。控制仅发送给当前手机。
+- Android 增加可选 AccessibilityService、启用引导、绿色选中框与浮动暂停标记。方向选择、Tab 顺序选择、点击、长按、滚动与返回／主页／最近任务由手机本地节点操作实现。
+- `scripts/test.sh` 通过：Swift 35 项、Android 36 项，均无失败／跳过；Android lint 0 errors、9 warnings（包含绘制分配、静态服务生命周期引用与本地化提示，另有既有依赖／资源警告）。APK 构建成功。
+- 补充并单独执行真实 Swift/JVM TLS 联调：start → next → click → stop 指令正确到达，服务器绑定同一个连接身份。该测试使用模拟输入回调，不等同于真机控件执行验收。
+- 回归覆盖：控制认证与撤销、无会话拒绝、跨连接控制隔离、锁屏拒绝、六秒超时、密码节点排除、窗口变化拒绝旧选择、点击／长按动作、Mac 多机时控制不广播、切换设备停止、缺少权限提示、暂停后的迟到响应不会恢复控制。
+- macOS release 构建、ad-hoc codesign 校验及 `git diff --check` 通过。产物位于 `artifacts/0.8.0/WiFi Remote Input.app`、`artifacts/WiFiRemoteInput-0.8.0-macOS.zip`、`artifacts/WiFiRemoteInput-0.8.0-debug.apk`；校验和位于 `artifacts/0.8.0/SHA256SUMS`。
+- 尚待验收：Mac 原生界面检查被系统锁屏阻断，未替换运行中的旧版；手机必须由用户安装新版并在系统设置启用「Remote Input 手机控制」，再验证常用应用的实际控件兼容性。当前不保证游戏／自绘画布可操作，也未新增鼠标触控或投屏。
+
+## 0.8.1 — 合并模式切换
+
+- 删除整段发送、草稿和 ⌘Return 发送入口；工作台与小窗统一使用「实时输入 / 手机控制」单排切换，沿用原分段控件样式。移除多余 autoMode / setMode 状态。
+- Swift 35 项测试通过，macOS release 构建及签名校验通过；Android 无改动，继续使用 0.8.0。
+- 已通过原生界面检查工作台两种模式，并截图确认实时输入仅有一排模式切换。已更新并启动 artifacts/WiFi Remote Input.app（0.8.1）；当前手机连接不可用，未执行手机操作。
+- 压缩包：artifacts/WiFiRemoteInput-0.8.1-macOS.zip。
+
+## 0.8.2 — Tab 全区域点击
+
+模式按钮在布局和背景之后设置矩形 contentShape，工作台与小窗共用修复。macOS release 构建、签名校验和 git diff --check 通过；已更新并启动本机应用，实际点击「手机控制」右侧留白及「实时输入」左侧留白，均成功切换。安装包：artifacts/WiFiRemoteInput-0.8.2-macOS.zip。
+
+## 0.9.0 — 鼠标捕获与坐标触控
+
+- Mac 点击控制区、手机确认后捕获鼠标；相对移动映射到手机圆形指针，左键发送携带坐标的单击，右键返回。Esc、窗口失焦、切换模式／设备、断线或手机暂停后释放鼠标。首次激活点击不发送给手机。
+- Android 新增 canPerformGestures 与 dispatchGesture 单击，无需目标 App 提供键盘焦点节点；沿用配对认证、单连接控制、密码节点命中拦截、锁屏及超时退出。
+- `scripts/test.sh`：Swift 38 项、Android 39 项，共 77 项，0 失败、0 跳过；Android lint 0 errors / 10 warnings。两端 release/debug 构建通过，macOS codesign 验证与 git diff --check 通过。
+- 新回归覆盖：严格坐标校验、无节点时派发触控、实际屏幕尺寸坐标换算、重复点击忙碌和系统拒绝、密码节点与撤销、移动合并与点击顺序、停止丢弃排队点击、捕获失败不隐藏鼠标、重复释放及析构时光标恢复。真实 Swift/JVM TLS 联调验证 pointer_start / pointer_move / pointer_tap / stop 和坐标封装。
+- 已更新并启动 Mac 0.9.0，原生界面确认「点击捕获鼠标」入口与说明。当前手机未连接，因此尚未进行真实系统鼠标捕获与微信触控端到端验收；自动测试使用注入的鼠标 API 和 Robolectric 手势服务，不等同于真机验收。
+- 产物：artifacts/WiFiRemoteInput-0.9.0-macOS.zip、artifacts/WiFiRemoteInput-0.9.0-debug.apk，校验和 artifacts/SHA256SUMS-0.9.0。手机需用户更新 APK，必要时关闭再开启 Remote Input 手机控制辅助功能。
+
+## Android 0.9.1 — 控制期间常亮
+
+- 将 FLAG_KEEP_SCREEN_ON 绑定到控制会话的可见辅助功能浮层；停止控制／接收、断线超时、撤销、手动锁屏或销毁服务时移除浮层，恢复系统息屏。
+- Android 41 项测试全部通过，无失败或跳过；新增测试验证认证前不常亮、键盘与鼠标控制常亮、持续保活保持常亮、其他连接不能释放、停止／超时／撤销／锁屏／销毁释放。
+- Android lint 与 assembleDebug 通过，git diff --check 通过；产物 artifacts/WiFiRemoteInput-0.9.1-debug.apk。Mac 继续使用 0.9.0，无需更新。
+- 测试检查实际挂载窗口的标志与移除生命周期；真实 HyperOS 的持续亮屏效果仍需安装后验收。
+
+## macOS 0.9.1 — 修复捕获后立即退出
+
+根因：每次成功移动／保活响应都会再次发布 controlActive=true；捕获订阅重复调用 beginCapture，原先的 !capturing guard 失败后调用 stop，导致正常响应触发退出。修复为合并实际鼠标控制状态并去重，同时使 beginCapture 在已捕获时直接返回。
+
+Swift 39 项测试通过，新增回归验证移动、保活、点击与返回响应不重复产生捕获状态转换，显式暂停仅产生一次 false。release 构建、签名及 git diff --check 通过；已更新并启动本机 0.9.1。重启后尝试连接手机失败，尚未在本次实际连接中复验持续捕获。Android 无改动。压缩包：artifacts/WiFiRemoteInput-0.9.1-macOS.zip。
+
+## 0.9.2 — 指针流畅度优化
+
+- Mac 采样上限 20→30Hz，控制请求最小间隔 45→约33.3ms，保留限速、合并和点击顺序。
+- Android 在显示帧推进32ms线性插值，支持刷新率变化；点击直接定位至真实坐标。停止和重启会取消旧帧回调，静止后不持续重绘。移除绘制中的临时位置／矩形分配，缓存屏幕尺寸并随布局变化更新。
+- Swift 39 项、Android 44 项测试通过，共83项，无失败／跳过。新增插值边界、刷新频率独立、运动重定向及点击取消插值测试。真实TLS联调、两端构建、Mac签名、git diff --check通过；Android lint 0 errors / 7 warnings。
+- 已更新并启动Mac0.9.2；手机需安装artifacts/WiFiRemoteInput-0.9.2-debug.apk。尚未实测手机帧率或端到端延迟，不将网络更新频率等同于实际显示帧率。
+
+## 0.9.3 — 按住拖动与长按
+
+- Mac 左键按下／移动／松开分别发送 pointer_down / pointer_drag / pointer_up，首次捕获点击的松开不发送；仅合并相邻拖动，保留按下和松开边界。按住左键时忽略同时按下右键。
+- Android PointerDrag 用 willContinue / continueStroke 延续同一个触点；每段完成后推进最新坐标，最终坐标及释放不会被丢弃。停止／撤销／超时释放当前触摸并清除待移动位置。按住不动保持触点，支持长按。点击发生在正常按下／松开流程中。
+- Swift 40 项、Android 49 项共89项测试全部通过，无失败／跳过；新增持续按住、路径坐标、移动合并、最终释放、系统取消／拒绝、撤销及服务停止清理测试。路径测试启用 Robolectric native graphics，验证真实 Path 几何；真实 Swift/JVM TLS 验证新增指令封装。
+- Android lint、两端构建、Mac签名与git diff --check通过。已更新并启动本机Mac0.9.3，APK位于artifacts/WiFiRemoteInput-0.9.3-debug.apk。手机需更新；当前未连接手机，实际微信滑动／桌面图标拖动仍待真机验收。
+
+## macOS 0.9.4 — 拖动取消不退出捕获
+
+确认代码中 touch_not_down 会直接 stopControl，导致一次手机触摸取消升级为整个捕获退出。本次保留会话与鼠标捕获，仅中止当前触摸；松开前的拖动转换为纯指针移动，不补发 touch-down。松开后下一次按下可建立新手势。按下被拒绝（忙碌／密码框）也隔离当前手势，恢复提示不被移动／保活成功覆盖。
+
+Swift 41 项测试、release构建、签名及git diff --check通过。新增回归验证取消后捕获保持、只移动指针、松开再按下恢复和显式暂停仍退出。本次未定位手机取消手势的具体原因，也不声称涵盖所有退出路径。
+
+产物 artifacts/0.9.4/WiFi Remote Input.app 与 artifacts/WiFiRemoteInput-0.9.4-macOS.zip。更新UI被用户正在操作打断，未强制退出或替换运行中的旧版；需退出旧版后启动新包。Android无改动。
+
+## 2026-09-22 — Mac 0.9.5 键鼠协同
+
+- Mac `swift test`：42 项通过，含捕获期间 no_editor/password_blocked 不停止控制、有效快照恢复输入、仅发给当前手机回归；既有原生中文组词、镜像编辑、其他应用组词保护测试通过。
+- Release 构建和 ad-hoc 签名校验通过。Android 无新增修改，沿用 0.9.3。
+- 实际打开新版并验证控制页布局、已配对小米连接成功。自动化点击捕获时，确认响应到达前系统鼠标已不在控制区域，命中越界保护；不能将此自动化尝试算作真实捕获验收。仍需人工验证捕获后点框、中文选词、手机切框以及 Esc 退出。临时坐标诊断已移除。
+
+## 2026-09-22 — Mac 0.9.6 捕获启动修复
+
+- 删除手机确认后的全局鼠标坐标命中检查，直接依赖控制区 mouseDown 发起请求，并继续验证窗口 key 状态及 firstResponder。避免多显示器或等待期间坐标变化误取消捕获。
+- Swift 43 项测试通过，新增延迟确认启动捕获、确认期间失焦不恢复捕获回归，注入鼠标 lease 避免测试操作真实光标。Release 构建及签名验证通过。
+- 实机 UI 验证：连接小米 13 后点击控制区，显示“控制中 / 鼠标捕获中”；手机返回 password_blocked 时保持捕获；Esc 后显示“已暂停”。未向手机输入文字或点击手机内容。0.9.5 中将启动失败仅归因于自动化的判断已修正。

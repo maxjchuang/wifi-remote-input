@@ -55,7 +55,7 @@ class MainActivity : Activity() {
             }
         }
         val name = ReceiverState.deviceName(this)
-        val state = listOf(peer, receiving, preparing, connected, enabled, selected, name, displayedCode, notice, ReceiverState.status).joinToString("|")
+        val state = listOf(PhoneControlService.active != null, peer, receiving, preparing, connected, enabled, selected, name, displayedCode, notice, ReceiverState.status).joinToString("|")
         if (!force && state == lastState) return
         lastState = state
         content.removeAllViews()
@@ -87,6 +87,13 @@ class MainActivity : Activity() {
             if (enabled) manager.showInputMethodPicker() else startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS))
         })
         content.addView(setup)
+        val control = ui.card()
+        control.addView(ui.label("手机控制 · 可选", 12f, true))
+        control.addView(ui.label(if (PhoneControlService.active != null) "辅助功能已开启 ✓" else "用 Mac 鼠标和键盘操作手机", 17f))
+        control.addView(ui.label("鼠标移动指针，左键点击、右键返回。仅操作当前手机；无需开启也能输入文字。", 12f, true))
+        control.addView(ui.button(if (PhoneControlService.active != null) "管理辅助功能" else "开启辅助功能") { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) })
+        if (PhoneControlService.active != null) control.addView(ui.button("暂停手机控制") { PhoneControlService.active?.stop() })
+        content.addView(control)
         if (notice.isNotEmpty()) content.addView(centered(notice, 13f, true))
         val primary = when {
             preparing -> "正在开启…"

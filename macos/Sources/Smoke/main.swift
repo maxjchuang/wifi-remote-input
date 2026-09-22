@@ -71,6 +71,19 @@ import RemoteCore
         precondition(deliveries.allSatisfy { $0["status"] as? String == "ok" })
         second.close()
         print("PASS two independent TLS receivers, device names, credential isolation and concurrent Unicode delivery")
+        for action in ["start", "next", "click", "stop"] {
+            let result = try await reconnect.exchange("control.action", ["action": action])
+            precondition(result["status"] as? String == "ok")
+        }
+        let pointer = try await reconnect.exchange("control.action", ["action": "pointer_start"])
+        precondition(pointer["status"] as? String == "ok")
+        for action in ["pointer_move", "pointer_tap", "pointer_down", "pointer_drag", "pointer_up"] {
+            let response = try await reconnect.exchange("control.action", ["action": action, "x": "7000", "y": "2500"])
+            precondition(response["status"] as? String == "ok")
+        }
+        let stopped = try await reconnect.exchange("control.action", ["action": "stop"])
+        precondition(stopped["status"] as? String == "ok")
+        print("PASS authenticated control commands and pointer coordinates over pinned TLS WebSocket")
         reconnect.close(); print("PASS pairing, reconnect authentication, Unicode and all six keys over pinned TLS WebSocket")
     }
 }

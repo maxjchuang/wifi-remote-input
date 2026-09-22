@@ -14,6 +14,30 @@ class ProtocolTest {
     private fun message(type: String, key: String, value: String) = JSONObject().put("version", 1).put("type", type).put("payload", JSONObject().put(key, value)).toString()
     private fun send(type: String, key: String, value: String) = protocol.handle(message(type, key, value))
     private fun pair(): String = send("pair", "code", pairing.begin()).getString("token")
+    @Test fun pointerCoordinatesAreStrictBoundedAndAuthenticated() {
+        fun call(payload: JSONObject) = protocol.handle(JSONObject().put("version", 1).put("type", "control.action").put("payload", payload).toString()).getString("status")
+        fun payload(x: Any, y: Any = "5000") = JSONObject().put("action", "pointer_tap").put("x", x).put("y", y)
+        assertEquals("unauthorized", call(payload("5000"))); pair()
+        for (bad in listOf("-1", "10001", "NaN", "1.5", "", 5000)) assertEquals("invalid_action".takeIf { bad is String } ?: "invalid_message", call(payload(bad)))
+        assertEquals("invalid_action", call(payload("5000").put("extra", "field")))
+        assertEquals("ok", call(payload("5000")))
+        assertEquals(1, received.size)
+        assertEquals("5000", JSONObject(received.single().second).getString("x"))
+        pairing.revoke(); assertEquals("unauthorized", call(payload("5000")))
+    }
+    @Test fun controlsRequireAuthenticationAndRejectUnknownOrExtraFields() {
+        assertEquals("unauthorized", send("control.action", "action", "home").getString("status"))
+        assertTrue(received.isEmpty())
+        pair()
+        assertEquals("invalid_action", send("control.action", "action", "shell").getString("status"))
+        val extra = """{"version":1,"type":"control.action","payload":{"action":"click","x":1}}"""
+        assertEquals("invalid_action", protocol.handle(extra).getString("status"))
+        assertTrue(received.isEmpty())
+        assertEquals("ok", send("control.action", "action", "start").getString("status"))
+        pairing.revoke()
+        assertEquals("unauthorized", send("control.action", "action", "click").getString("status"))
+        assertEquals(listOf("control.action" to "start"), received)
+    }
     @Test fun editorEditsRequireAuthenticationAndBoundedStringPayloads() {
         val payload = JSONObject().put("editorId", "1").put("expectedHash", "a".repeat(64)).put("text", "你好")
             .put("selectionStart", "2").put("selectionEnd", "2")

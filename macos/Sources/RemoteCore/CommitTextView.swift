@@ -2,7 +2,7 @@
 import AppKit
 
 /// One native editor for remote text and local IME composition. Remote updates never commit text.
-public final class CommitTextView: NSTextView {
+open class CommitTextView: NSTextView {
     public var mirrorsEditor = false
     public var broadcast = false
     public var onEdit: ([String: String]) -> Bool = { _ in false }
@@ -31,13 +31,13 @@ public final class CommitTextView: NSTextView {
     public var onKey: (String) -> Void = { _ in }
     public var onPause: () -> Void = { }
     public var onInputClick: () -> Void = { }
-    public override func becomeFirstResponder() -> Bool {
+    open override func becomeFirstResponder() -> Bool {
         let accepted = super.becomeFirstResponder()
         if accepted { onInputClick() }
         return accepted
     }
-    public override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
-    public override func mouseDown(with event: NSEvent) {
+    open override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    open override func mouseDown(with event: NSEvent) {
         window?.makeKey()
         window?.makeFirstResponder(self)
         onInputClick()
@@ -51,7 +51,7 @@ public final class CommitTextView: NSTextView {
     private var discarding = false
     private var focusObserver: NSObjectProtocol?
     private var activationObserver: NSObjectProtocol?
-    public override func viewDidMoveToWindow() {
+    open override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         if let focusObserver { NotificationCenter.default.removeObserver(focusObserver) }
         if let activationObserver { NotificationCenter.default.removeObserver(activationObserver) }
@@ -85,18 +85,18 @@ public final class CommitTextView: NSTextView {
         } else if !string.isEmpty { string = ""; setSelectedRange(NSRange(location: 0, length: 0)) }
         compositionBase = nil
     }
-    public override func resignFirstResponder() -> Bool {
+    open override func resignFirstResponder() -> Bool {
         // Never let focus loss implicitly commit an unfinished candidate to the phone.
         discardComposition()
         onPause()
         return super.resignFirstResponder()
     }
-    public override func setMarkedText(_ text: Any, selectedRange: NSRange, replacementRange: NSRange) {
+    open override func setMarkedText(_ text: Any, selectedRange: NSRange, replacementRange: NSRange) {
         guard !discarding, permitted() else { discardComposition(); return }
         if mirrorsEditor, !hasMarkedText() { compositionBase = base }
         super.setMarkedText(text, selectedRange: selectedRange, replacementRange: replacementRange)
     }
-    public override func insertText(_ text: Any, replacementRange: NSRange) {
+    open override func insertText(_ text: Any, replacementRange: NSRange) {
         guard !discarding, permitted() else { discardComposition(); return }
         let value = (text as? NSAttributedString)?.string ?? (text as? String ?? "")
         if mirrorsEditor, !broadcast, let previous = compositionBase ?? base {
@@ -110,18 +110,18 @@ public final class CommitTextView: NSTextView {
             if !value.isEmpty { onCommit(value) }
         }
     }
-    public override func cut(_ sender: Any?) {
+    open override func cut(_ sender: Any?) {
         guard mirrorsEditor, !broadcast, permitted(), let previous = base, !hasMarkedText() else { return }
         super.cut(sender); finishEdit(from: previous)
     }
-    public override func selectAll(_ sender: Any?) {
+    open override func selectAll(_ sender: Any?) {
         guard !broadcast else { return }
         let previous = base
         super.selectAll(sender)
         if mirrorsEditor, !editingCommand, permitted(), let previous { finishEdit(from: previous) }
     }
-    public override func performDragOperation(_ sender: NSDraggingInfo) -> Bool { false }
-    public override func doCommand(by selector: Selector) {
+    open override func performDragOperation(_ sender: NSDraggingInfo) -> Bool { false }
+    open override func doCommand(by selector: Selector) {
         guard !discarding, permitted() else { discardComposition(); return }
         if hasMarkedText() { super.doCommand(by: selector); return }
         let mapping = ["insertNewline:": "Enter", "deleteBackward:": "Backspace", "moveLeft:": "ArrowLeft", "moveRight:": "ArrowRight", "moveUp:": "ArrowUp", "moveDown:": "ArrowDown"]

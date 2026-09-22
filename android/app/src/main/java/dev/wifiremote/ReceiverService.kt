@@ -25,6 +25,7 @@ object ReceiverState {
 
 class ReceiverService : Service() {
     private var server: InputServer? = null
+    private var advertisement: ServiceAdvertisement? = null
     private val main = Handler(Looper.getMainLooper())
     @Volatile private var stopped = false
     override fun onBind(intent: Intent?) = null
@@ -43,9 +44,22 @@ class ReceiverService : Service() {
                     val done = CountDownLatch(1)
                     var result = "no_editor"
                     val cancelled = java.util.concurrent.atomic.AtomicBoolean(false)
-                    main.post { if (!cancelled.get() && !stopped) result = if (authorized()) RemoteIme.active?.apply(type, value) ?: "no_editor" else "unauthorized"; done.countDown() }
+                    main.post { if (!cancelled.get() && !stopped) result = if (authorized()) {
+                        if (type == "control.action") {
+                            val message = org.json.JSONObject(value)
+                            try { PhoneControlService.active?.command(message.getString("owner"), message.getString("action"), message.optString("x").toIntOrNull(), message.optString("y").toIntOrNull(), authorized) ?: "accessibility_disabled" }
+                            catch (_: RuntimeException) { PhoneControlService.active?.stop(); "action_unavailable" }
+                        } else RemoteIme.active?.apply(type, value) ?: "no_editor"
+                    } else "unauthorized"; done.countDown() }
                     if (done.await(2, TimeUnit.SECONDS)) result else { cancelled.set(true); "editor_timeout" }
-                }, { ReceiverState.status = it }, snapshot = { authorized ->
+                }, { state ->
+                    ReceiverState.status = state
+                    if (state.startsWith("接收中")) main.post {
+                        if (!stopped && advertisement == null) {
+                            advertisement = ServiceAdvertisement(this, identity.fingerprint).also { it.start() }
+                        }
+                    }
+                }, snapshot = { authorized ->
                     val done = CountDownLatch(1)
                     val cancelled = java.util.concurrent.atomic.AtomicBoolean(false)
                     var result = org.json.JSONObject().put("status", "no_editor")
@@ -61,7 +75,7 @@ class ReceiverService : Service() {
                         cancelled.set(true); org.json.JSONObject().put("status", "editor_timeout")
                     } else if (stopped || !authorized()) org.json.JSONObject().put("status", "unauthorized")
                     else result
-                }, deviceName = { ReceiverState.deviceName(this) }, peersChanged = { ReceiverState.connectedPeers = it })
+                }, deviceName = { ReceiverState.deviceName(this) }, peersChanged = { ReceiverState.connectedPeers = it }, controlClosed = { owner -> main.post { PhoneControlService.active?.stop(owner) } })
                 synchronized(this) { if (stopped) endpoint.shutdown() else { server = endpoint; endpoint.start() } }
             } catch (_: Exception) { ReceiverState.status = "无法启动接收服务"; stopSelf() }
         }.start()
@@ -69,6 +83,8 @@ class ReceiverService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int) = START_NOT_STICKY
     override fun onDestroy() {
         stopped = true
+        PhoneControlService.active?.stop()
+        advertisement?.close(); advertisement = null
         ReceiverState.pairing(this).cancel()
         synchronized(this) { server?.let { Thread { it.shutdown() }.start() }; server = null }
         ReceiverState.connectedPeers = emptySet()

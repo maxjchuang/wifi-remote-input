@@ -81,3 +81,30 @@ Within an InputConnection batch, Android replaces only the changed text range (p
 Mac shows a single native text editor. Confirmed local edits remain visible while pending, and snapshots cannot overwrite marked text or a newer pending edit. Focus loss drops unfinished composition and queued operations; re-entering the native editor or returning to a key window resumes without waiting for an earlier acknowledgement. Phone reads never echo back as writes. Multi-phone mode sends independent text/key events at each target's own caret rather than copying the preview phone's entire document to others.
 
 `Send` invokes the editor's custom action if supplied, otherwise `IME_ACTION_SEND`. `LineBreak` commits a literal newline. Automatic `Enter` recognizes explicit SEND even with NO_ENTER_ACTION, supports custom actionId when permitted, and otherwise uses paired virtual keyboard events with SOFT_KEYBOARD and KEEP_TOUCH_MODE flags. These calls confirm request acceptance, not delivery of a chat message; applications control their send behavior. Shift+Enter maps to LineBreak after composition is confirmed.
+
+
+## 地址发现（可选，0.7.0）
+
+DNS-SD 服务类型 `_wri-input._tcp.`，端口指向现有 TLS WebSocket 接收端；TXT `v=1`、`id=<完整小写 SHA-256 证书指纹>`。这些字段仅用于查找已配对记录和候选地址，不能建立信任或替换保存的证书。连接仍执行相同证书固定校验和 `auth` 流程；广播不含授权凭据，不允许未配对输入。
+
+## 可选手机控制（0.8.0）
+
+`control.action` 的 payload 严格为 `{ "action": "start" }`。允许 start、stop、ping、back、home、recents、next、previous、left、right、up、down、click、long_click、scroll_up、scroll_down；未知动作或多余字段拒绝。仅通过已认证连接调用，返回普通 result/status。
+
+服务端将控制权绑定到 WebSocket 实例，start 获取控制权；另一实例返回 control_busy。Mac 仅在本地控制区聚焦期间每两秒 ping；六秒无活动、断线、撤销认证、锁屏、用户暂停、接收服务停止或辅助功能退出都会释放控制权。新连接必须重新 start，不重放操作。stop 可重复调用，其他会话不能停止当前控制者。普通文字输入不要求此权限。
+
+状态包括 accessibility_disabled、control_paused、control_busy、device_locked、no_controls、selection_changed、password_blocked、action_unavailable。选中控件在手机本地维护，不发送文本、节点树或截图。窗口更新后清除选中；执行前刷新节点并核对可见性、当前窗口、密码属性。没有坐标或任意 Intent／Shell 命令入口。
+
+### 鼠标捕获扩展（0.9.0）
+
+- `control.action` 新增 `pointer_start`（仅 action 字段），从屏幕中心建立指针会话；原有 start 保留键盘节点控制。
+- `pointer_move` / `pointer_tap` payload 严格为 `{"action":"pointer_tap","x":"7000","y":"2500"}`，x/y 为十进制整数字符串，范围 0…10000，表示当前手机默认显示屏从左上角起算的归一化位置；不接受任意字段、负数、浮点、NaN 或越界值。
+- `pointer_tap` 携带独立坐标，使用 AccessibilityService.dispatchGesture 发送 40ms 单击，不要求目标有可访问节点。可读取到的密码节点命中时拒绝。`ok` 表示系统已接受手势派发，不表示目标应用已经执行操作；系统拒绝为 gesture_unavailable，上一手势未完成为 gesture_busy，操作不重试。
+- 右键沿用 back，Esc 沿用 stop。指针移动不产生触控，也不获取或上传手机画面。控制者认证、连接绑定、锁屏、租期及撤销规则不变。
+- Mac 捕获仅在手机确认 pointer_start 且本地控制区仍聚焦后生效。移动采样 30Hz（0.9.2 起），连续移动合并；点击作为顺序边界并携带点击时位置。队列上限 32，停止时丢弃待发送操作。控制请求之间最少约 33.3ms（0.9.2 起），避免触发服务端 40 帧/秒限速。
+
+### 持续触摸（0.9.3）
+
+`pointer_down`、`pointer_drag`、`pointer_up` 使用与 pointer_move 相同的 x/y 严格归一化坐标字段。down 建立 willContinue=true 的触摸，drag 通过 continueStroke 延续同一根手指，up 用 willContinue=false 结束。未建立 down 的 drag 返回 touch_not_down；重复 down 返回 gesture_busy。旧 pointer_tap 保留兼容。
+
+Mac 仅合并相邻且同类型的 pointer_drag，不跨 down/up 合并；up 携带最终坐标。Android 单个手势分段执行中仅保存最新待移动坐标，up 标记不会被移动覆盖；等待当前段完成后释放。stop、失焦引发的停止、断线、超时与撤销会丢弃待移动位置并结束当前触摸。释放可能触发目标应用的松手行为，已发生的按下或拖动不能撤销。

@@ -88,7 +88,7 @@ struct WorkspaceView: View {
             Rectangle().fill(lineColor).frame(width: 1)
             Group {
                 switch page {
-                case .input: inputContent
+                case .input: if client.controlMode { controlContent.padding(28) } else { inputContent }
                 case .scanner:
                     QRScannerPage { offer in
                         guard page == .scanner else { return }
@@ -107,25 +107,21 @@ struct WorkspaceView: View {
                     HStack(spacing: 6) {
                         Circle().frame(width: 5, height: 5)
                         Text(client.connected ? (client.paused ? "PAUSED" : "LIVE") : "未连接")
-                    }.font(.system(size: 10, weight: .semibold)).padding(.horizontal, 10).padding(.vertical, 6)
+                    }.font(.system(size: 10, weight: .semibold)).padding(.horizontal, 10).padding(.vertical, compact ? 6 : 9)
                         .foregroundStyle(accent).background(accent.opacity(0.12), in: Capsule())
                     Button { presentation.showPopover(hideWorkspace: true) } label: { Image(systemName: "menubar.arrow.up.rectangle") }
                         .buttonStyle(QuietControl(color: accent, line: lineColor)).help("切换到状态栏").accessibilityLabel("切换到状态栏")
                 }
+                controlModeSwitch
                 if client.broadcasting {
                     Text("接收：\(client.targetNames.isEmpty ? "请勾选手机" : client.targetNames)")
                         .font(.system(size: 11, weight: .medium)).foregroundStyle(accent).lineLimit(2)
                 }
-                HStack(spacing: 4) {
-                    modeButton("实时输入", automatic: true)
-                    modeButton("整段发送", automatic: false)
-                }.padding(4).background(lineColor.opacity(0.45), in: RoundedRectangle(cornerRadius: 10))
                 VStack(spacing: 0) {
                     VStack(alignment: .leading, spacing: 10) {
-                        Text(client.autoMode ? "中文选词确认后自动送达" : "编辑完成后整段发送")
+                        Text("中文选词确认后自动送达")
                             .font(.system(size: 11)).foregroundStyle(.secondary)
-                        if client.autoMode { LiveInputArea(client: client).id(client.selectedID) }
-                        else { TextEditor(text: $client.text).font(.system(size: 18)).scrollContentBackground(.hidden) }
+                        LiveInputArea(client: client).id(client.selectedID)
                     }.padding(18).frame(maxHeight: .infinity)
                     Rectangle().fill(lineColor).frame(height: 1)
                     HStack(spacing: 12) {
@@ -134,10 +130,6 @@ struct WorkspaceView: View {
                         if !client.connected {
                             Button(client.busy ? "连接中…" : "连接") { if client.broadcasting { client.connectTargets() } else { client.address.isEmpty ? openScanner() : client.connect() } }
                                 .buttonStyle(QuietControl(color: accent, line: lineColor)).disabled(client.busy)
-                        } else if !client.autoMode && !client.paused {
-                            Button("发送 ↗") { client.send("text.commit", value: client.text) }
-                                .keyboardShortcut(.return, modifiers: .command)
-                                .buttonStyle(QuietControl(color: accent, line: lineColor)).disabled(client.text.isEmpty)
                         } else {
                             Button(client.paused ? "继续输入" : "暂停") { client.paused ? client.resumeInput() : client.pauseInput() }
                                 .buttonStyle(QuietControl(color: accent, line: lineColor))
@@ -154,56 +146,75 @@ struct WorkspaceView: View {
             }.padding(28)
     }
 
-    private func modeButton(_ title: String, automatic: Bool) -> some View {
-        Button { client.setMode(automatic) } label: {
-            Text(title).font(.system(size: 12, weight: .medium)).frame(maxWidth: .infinity).padding(.vertical, 9)
-                .foregroundStyle(client.autoMode == automatic ? .primary : .secondary)
-                .background(client.autoMode == automatic ? panelColor : .clear, in: RoundedRectangle(cornerRadius: 7))
-        }.buttonStyle(.plain).accessibilityAddTraits(client.autoMode == automatic ? .isSelected : [])
-    }
     private var compactContent: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 8) {
-                Circle().fill(client.connected ? accent : .secondary).frame(width: 6, height: 6)
+                Circle().fill((client.controlMode ? client.active.connected : client.connected) ? accent : .secondary).frame(width: 6, height: 6)
                 Menu {
                     ForEach(client.devices) { device in
-                        Button(device.name + (device.connected ? " · 已连接" : " · 未连接")) { client.select(device) }
+                        Button(device.name + (device.connected ? " · 已连接" : " · 未连接")) { client.select(device); client.connectFromPopover() }
                     }
                 } label: {
-                    Text(client.targetTitle).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+                    Text(client.controlMode ? client.active.name : client.targetTitle).font(.system(size: 13, weight: .semibold)).lineLimit(1)
                 }.menuStyle(.borderlessButton).fixedSize(horizontal: false, vertical: true)
                 Spacer()
+                if !(client.controlMode ? client.active.connected : client.connected) {
+                    Button(client.busy ? "连接中…" : (client.hasSavedInputTargets ? "连接" : "配对")) {
+                        if client.controlMode && !client.active.address.isEmpty { client.connect() }
+                        else if client.hasSavedInputTargets { client.connectFromPopover() }
+                        else { presentation.showWorkspace(panel: .scanner) }
+                    }.buttonStyle(.plain).foregroundStyle(accent).font(.system(size: 11, weight: .medium))
+                        .disabled(client.busy)
+                }
                 Button { presentation.showWorkspace() } label: {
                     Image(systemName: "arrow.up.left.and.arrow.down.right").frame(width: 24, height: 24)
                 }.buttonStyle(.plain).foregroundStyle(accent)
                     .help("展开工作台").accessibilityLabel("展开工作台")
             }
+            controlModeSwitch
+            if client.controlMode { PhoneControlPanel(client: client, compact: true) } else {
             VStack(alignment: .leading, spacing: 8) {
-                Text(client.broadcasting ? "接收：\(client.targetNames.isEmpty ? "请在工作台勾选手机" : client.targetNames)" : (client.autoMode ? "实时输入 · 中文选词后自动送达" : "整段发送 · ⌘Return 发送"))
+                Text(client.broadcasting ? "接收：\(client.targetNames.isEmpty ? "请在工作台勾选手机" : client.targetNames)" : "中文选词后自动送达")
                     .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(2)
-                if client.autoMode {
-                    LiveInputArea(client: client).id(client.selectedID).frame(height: 100)
-                } else {
-                    TextEditor(text: $client.text).font(.system(size: 16))
-                        .scrollContentBackground(.hidden).frame(height: 100)
-                }
+                LiveInputArea(client: client).id(client.selectedID).frame(height: 80)
             }.padding(12).background(Color(nsColor: .textBackgroundColor).opacity(0.65), in: RoundedRectangle(cornerRadius: 12))
             HStack(alignment: .top, spacing: 10) {
                 Text(client.status).font(.system(size: 11)).foregroundStyle(.secondary)
                     .lineLimit(3).frame(maxWidth: .infinity, alignment: .leading).help(client.status)
-                if client.autoMode && client.connected {
+                if client.connected {
                     Button(client.paused ? "继续" : "暂停") { client.paused ? client.resumeInput() : client.pauseInput() }
                         .buttonStyle(.plain).foregroundStyle(accent)
                 }
-                if !client.autoMode {
-                    Button("发送") { client.send("text.commit", value: client.text) }
-                        .keyboardShortcut(.return, modifiers: .command)
-                        .buttonStyle(.plain).foregroundStyle(accent)
-                        .disabled(!client.connected || client.paused || client.text.isEmpty)
-                }
+            }
             }
             Spacer(minLength: 0)
         }.padding(18)
+    }
+    private var controlModeSwitch: some View {
+        HStack(spacing: 3) {
+            ForEach([false, true], id: \.self) { control in
+                Button { client.setControlMode(control) } label: {
+                    Text(control ? "手机控制" : "实时输入").font(.system(size: compact ? 11 : 12, weight: .medium))
+                        .frame(maxWidth: .infinity).padding(.vertical, compact ? 6 : 9)
+                        .foregroundStyle(client.controlMode == control ? accent : .secondary)
+                        .background(client.controlMode == control ? panelColor : .clear, in: RoundedRectangle(cornerRadius: 7))
+                        .contentShape(Rectangle())
+                }.buttonStyle(.plain).accessibilityAddTraits(client.controlMode == control ? .isSelected : [])
+            }
+        }.padding(4).background(lineColor.opacity(0.45), in: RoundedRectangle(cornerRadius: 10))
+    }
+    private var controlContent: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack {
+                Text(client.active.name).font(.headline)
+                Spacer()
+                Text(client.active.controlActive ? "● 控制中" : "已暂停").font(.system(size: 11)).foregroundStyle(accent)
+                Button { presentation.showPopover(hideWorkspace: true) } label: { Image(systemName: "menubar.arrow.up.rectangle") }.buttonStyle(.plain)
+            }
+            controlModeSwitch
+            PhoneControlPanel(client: client)
+            Label("仅控制当前手机 · 不同步到其他手机", systemImage: "lock").font(.system(size: 11)).foregroundStyle(.secondary)
+        }
     }
     private func selectPage(_ destination: Page) {
         client.pauseInput()
@@ -255,7 +266,7 @@ private struct LiveInputArea: View {
     }
 }
 
-private struct EnterModeControl: View {
+struct EnterModeControl: View {
     @Binding var selection: String
     @Environment(\.colorScheme) private var scheme
     private let modes = [(id: "auto", title: "自动", hint: "执行手机输入框的默认动作"),

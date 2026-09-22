@@ -50,10 +50,11 @@ class InteropTest {
             val code = pairing.begin()
             val ready = CountDownLatch(1)
             val inputs = Collections.synchronizedList(mutableListOf<Pair<String, String>>())
+            val controls = Collections.synchronizedList(mutableListOf<JSONObject>())
             var editorText = "手机已有文字"
             server = InputServer(InetSocketAddress("127.0.0.1", 0), identity.tls, pairing, { type, value, authorized ->
                 check(authorized())
-                if (type == "editor.edit") {
+                if (type == "control.action") { controls.add(JSONObject(value)); "ok" } else if (type == "editor.edit") {
                     val edit = JSONObject(value)
                     if (edit.getString("editorId") != "1" || edit.getString("expectedHash") != Secrets.hash(editorText + "\u0000" + editorText.length + "," + editorText.length)) "editor_conflict"
                     else { editorText = edit.getString("text"); inputs.add(type to value); "ok" }
@@ -85,6 +86,10 @@ class InteropTest {
             val output = process.inputStream.bufferedReader().readText()
             assertEquals(output, 0, process.exitValue())
             println(output)
+            assertEquals(listOf("start", "next", "click", "stop", "pointer_start", "pointer_move", "pointer_tap", "pointer_down", "pointer_drag", "pointer_up", "stop"), controls.map { it.getString("action") })
+            assertEquals("7000", controls[6].getString("x")); assertEquals("2500", controls[6].getString("y"))
+            assertEquals(1, controls.map { it.getString("owner") }.toSet().size)
+            assertTrue(controls.first().getString("owner").isNotEmpty())
             assertEquals("你好，小米 13 👋", inputs.first().second)
             assertEquals(listOf("Enter", "Backspace", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"), inputs.drop(1).take(6).map { it.second })
             assertEquals("同步中文 👋", inputs.last().second)

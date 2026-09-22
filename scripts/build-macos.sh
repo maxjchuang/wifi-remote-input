@@ -17,10 +17,11 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <key>CFBundleExecutable</key><string>WiFiRemoteInput</string>
 <key>CFBundleIconFile</key><string>AppIcon</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>0.6.8</string>
-<key>CFBundleVersion</key><string>608</string>
+<key>CFBundleShortVersionString</key><string>0.9.6</string>
+<key>CFBundleVersion</key><string>906</string>
 <key>LSMinimumSystemVersion</key><string>13.0</string>
 <key>NSCameraUsageDescription</key><string>扫描 Android 手机上的配对二维码，自动建立安全连接。画面仅在本机识别。</string>
+<key>NSBonjourServices</key><array><string>_wri-input._tcp</string></array>
 <key>NSLocalNetworkUsageDescription</key><string>Connect to your paired Android keyboard over local Wi-Fi.</string>
 <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
 </dict></plist>

@@ -8,6 +8,7 @@ import RemoteCore
     enum Panel { case input, scanner }
     @Published var requestedPanel: Panel?
     let shortcut = GlobalShortcut()
+    private let discovery = DeviceDiscovery()
     private let client: Client
     private var statusItem: NSStatusItem?
     private var popover: NSPopover?
@@ -26,6 +27,8 @@ import RemoteCore
         item.button?.target = self
         item.button?.action = #selector(togglePopover(_:))
         statusItem = item
+        discovery.found = { [weak self] pin, address in self?.client.discoveredDevice(fingerprint: pin, address: address) }
+        discovery.start()
         shortcut.action = { [weak self] in self?.summonInput() }
         heartbeat = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in await self?.client.checkConnection() }
@@ -52,6 +55,7 @@ import RemoteCore
         popover = panel
         panel.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         guard panel.isShown else { return }
+        client.connectFromPopover()
         // A menu-bar popover must not activate the application's workspace/Space.
         // Activation can close this transient popover and briefly raise the workspace
         // on another display. Only explicit showWorkspace() activates the application.
@@ -114,7 +118,7 @@ import RemoteCore
         client.pauseInput()
         if let popoverKeys { NSEvent.removeMonitor(popoverKeys); self.popoverKeys = nil }
     }
-    func quit() { client.disconnectAll(); NSApp.terminate(nil) }
+    func quit() { discovery.stop(); client.disconnectAll(); NSApp.terminate(nil) }
 }
 
 struct WorkspaceRegistration: NSViewRepresentable {

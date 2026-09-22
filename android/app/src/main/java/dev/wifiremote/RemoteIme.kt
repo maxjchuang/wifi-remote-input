@@ -2,6 +2,7 @@
 package dev.wifiremote
 
 import android.inputmethodservice.InputMethodService
+import android.content.Intent
 import android.view.View
 import android.view.KeyEvent
 import android.view.inputmethod.EditorInfo
@@ -20,8 +21,16 @@ open class RemoteIme : InputMethodService() {
         val ui = Ui(this)
         return ui.column(16).apply {
             setBackgroundColor(ui.background)
+            // Child buttons consume their own clicks; labels and padding open the app.
+            setOnClickListener {
+                startActivity(Intent(this@RemoteIme, MainActivity::class.java).addFlags(
+                    Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                ))
+            }
+            contentDescription = "打开 WiFi Remote Input"
+            isFocusable = true
             addView(ui.label("REMOTE INPUT", 13f).apply { setTextColor(ui.accent); letterSpacing = 0.12f })
-            addView(ui.label("与已配对 Mac 同步输入框 · 密码框受保护", 12f, true))
+            addView(ui.label("与已配对 Mac 同步输入框 · 密码框受保护\n点击此面板打开 App", 12f, true))
             addView(ui.button("切换输入法") { (getSystemService(INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager).showInputMethodPicker() })
         }
     }

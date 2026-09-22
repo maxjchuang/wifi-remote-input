@@ -1,0 +1,1 @@
+<resources><string name="phone_control_description">允许已配对的 Mac 返回、打开主页、选择和点击界面控件、长按及滚动，也可将鼠标位置映射为屏幕触控。读取界面结构以定位控件，不传输屏幕图片或控件文字。密码控件不参与选择。可在应用内暂停控制或关闭此服务；文字输入无需此权限。</string></resources>
