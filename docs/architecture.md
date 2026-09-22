@@ -1,77 +1,88 @@
-# Architecture
+# 架构设计
 
-## Components
+[项目首页](../README.md) · [开发与验证](development.md) · [协议](../protocol/README.md)
 
-### macOS client
+本文描述两端 0.9.6 的实现。历史演进与各次测试结果见[验证记录](validation.md)。
 
-The macOS app captures local keyboard and mouse events, translates them into protocol messages, and sends them to a paired Android device. The first implementation can reuse concepts and selected AGPL-compatible code from `jqssun/darwin-bt-remote`, especially its SwiftUI controls, key mapping, and direct-input capture.
+## 两条能力链路，共用认证连接
 
-### Android receiver
+```mermaid
+flowchart LR
+    subgraph Mac
+        UI[工作台 / 状态栏小窗] --> Client[Client：设备与输入目标]
+        Client --> Session[DeviceSession：单设备串行请求]
+        Editor[CommitTextView：原生中文输入] --> Session
+        Mouse[ControlKeysView：鼠标捕获] --> Session
+    end
+    Session -->|固定证书的 TLS WebSocket| Server[InputServer / Protocol]
+    Server --> Receiver[ReceiverService：主线程重新鉴权]
+    Receiver -->|文字 / 编辑 / 快照| IME[RemoteIme / InputConnection]
+    Receiver -->|可选 control.action| Control[PhoneControlService]
+    Control --> Gesture[PointerDrag / 系统导航 / 节点动作]
+    Control --> Overlay[指针与暂停浮层 / 常亮]
+```
 
-The Android app provides an `InputMethodService`. When selected as the active keyboard, it applies incoming text through `InputConnection.commitText()` and sends navigation or editor actions through the appropriate `InputConnection` APIs.
+普通文字通过 Android 输入法提交，不依赖辅助功能。手机控制需要用户单独启用 AccessibilityService，通过系统手势、节点动作和全局导航操作手机，不依赖 ADB、Root、USB 或云端服务。不传输手机屏幕、节点树或控件标签；文字同步单独走受保护的输入框快照。
 
-Mouse and global navigation are a separate optional capability because they require Android Accessibility permission. Text input must work without that permission.
+## 组件职责
 
-### Local transport
+| 位置 | 入口与职责 |
+| --- | --- |
+| macOS `Client.swift` | 已保存设备、当前设备、显式多机文字接收者、切换与暂停 |
+| macOS `App.swift` / `DeviceSession` | 每台手机的认证连接、输入队列、快照、控制队列及连接代次 |
+| macOS `RemoteCore/CommitTextView.swift` | 原生 NSTextView 组词、镜像编辑、失焦丢弃未确认候选 |
+| macOS `PhoneControlPanel.swift` | 控制页、键鼠协同、MouseCaptureLease 与局部事件监听 |
+| macOS `DeviceDiscovery.swift` | Bonjour 发现已配对手机的候选地址 |
+| Android `InputServer.kt` / `Protocol.kt` | TLS WebSocket、严格报文校验、鉴权、限流、连接身份 |
+| Android `ReceiverService.kt` | 用户启动的前台服务、主线程调度、执行前重新鉴权、NSD 生命周期 |
+| Android `RemoteIme.kt` | 输入框保护、Unicode 提交、按键、快照、比较后编辑 |
+| Android `PhoneControlService.kt` | 单连接控制权、租期、锁屏检查、节点/坐标操作、浮层 |
+| Android `PointerDrag.kt` / `PointerMotion.kt` | 连续触摸的合并与释放 / 仅用于显示的指针插值 |
 
-The Android device hosts the local endpoint. The Mac discovers it through Bonjour/mDNS or connects using a QR code containing the local address and a short-lived pairing secret.
+## 配对与信任边界
 
-After pairing, both sides store device keys. Every session is authenticated and encrypted. The server must not expose an unauthenticated HTTP or WebSocket input endpoint.
+Android 提供 TLS 1.3 WebSocket。二维码携带私有 IPv4 地址、完整证书 SHA-256 指纹和两分钟有效的一次性码；Mac 验证证书后才发送配对码或凭据。配对码全局最多五次猜测，使用后失效。
 
-## Trust boundaries
+Mac 将设备密钥存入 Keychain；Android 只保存其哈希。手机证书私钥位于应用私有 no-backup 目录，禁止应用备份。一台手机只授权一台 Mac，新配对替换旧密钥；一台 Mac 可以分别保存多台手机。友好名称只是显示信息，不能替代证书与密钥。撤销后已有连接的下一次操作也会重新鉴权。
 
-- Text and key events are sensitive because they may contain private messages or credentials.
-- Password fields must disable remote text input by default.
-- Pairing secrets expire after first use or a short timeout.
-- A paired Mac can be revoked from the Android app.
-- Logs must never contain typed text, clipboard contents, pairing secrets, or session keys.
+日志不记录文字、剪贴板、配对码或密钥。文字和快照仅在内存处理。密码框和锁屏在读取及写入前检查；坐标触控另外拒绝可识别的密码节点，不能将该检查视为对任意自绘密码界面的识别保证。
 
-## Initial milestones
+## 文字输入和多设备
 
-1. Android IME that accepts local test messages and commits Unicode text.
-2. Authenticated LAN connection and pairing flow.
-3. macOS text-entry client.
-4. Direct physical-keyboard capture on macOS.
-5. Navigation keys and editor actions.
-6. Optional mouse and scroll support using Android Accessibility APIs.
-7. Packaging, upgrade flow, documentation, and compatibility testing on Xiaomi 13.
+每台手机独立维护连接、队列和快照，同一连接一次只有一个请求在途；输入、快照、保活和控制共享此约束。断线后不重放输入，丢失确认意味着执行结果不确定。
 
-## Implemented MVP (0.1.0)
+普通单机编辑使用 `editorId` 和文本/选区哈希防止过时编辑覆盖新输入框；Android 只替换变化范围并保留 Unicode 代理对。快照要求完整文本，最大 2048 UTF-16 单位。实时输入约每 250ms 尝试刷新，忙时跳过；它不是跨进程原子同步。
 
-- Android SDK 35/Kotlin with user-started `specialUse` foreground service; no boot receiver. A local TLS WebSocket listener shares one process with the IME. IME calls are marshalled to the main thread, rechecking authorization immediately before applying input.
-- Certificate pinning uses a full SHA-256 value transferred via a QR code on the phone display (manual entry remains available); pairing uses a two-minute, eight-digit code with a global five-attempt budget. The Mac stores the issued 256-bit bearer device key in Keychain; Android stores only its hash and disables backups. A new pairing replaces the previous Mac.
-- TLS certificate/private key persists in Android's app-private no-backup directory. Reinstalling/clearing phone application data requires pairing with a new fingerprint. No separate account or CA service exists.
-- SwiftUI text editor and structured-key buttons; a shared URLSession transport also drives local interoperability tests. The client has one in-flight request, checks connectivity every five seconds and never replays input automatically.
-- All Android password editor variants and locked devices reject both text and keys. No focused editor returns `no_editor`. No AccessibilityService is shipped.
-- Scope deliberately excludes direct global hardware capture, mouse, clipboard, Bonjour. None is needed for the Unicode MVP.
+多机文字发送使用显式接收者集合，按各手机自己的光标提交，不复制预览手机的整篇文档。改变目标或任一接收者失败会暂停整组。群发不具备原子性，已完成的发送无法回滚。控制及控制中的文字始终直接路由到当前 DeviceSession。
 
-The foreground service declaration follows [Android's service-type requirements](https://developer.android.com/about/versions/14/changes/fgs-types-required). Real HyperOS background behavior remains a device-level acceptance check.
+## 捕获与控制权
 
-## QR pairing (0.2.0)
+点击控制区请求 `pointer_start`，手机确认后核验 Mac 窗口仍为 key window、控制视图仍为 firstResponder，再捕获鼠标。不能在网络往返后重新以全局鼠标位置判断点击有效性；0.9.6 已移除此检查。迟到的确认不得复活已取消或失焦的请求。
 
-Android renders the address, full certificate fingerprint and existing expiring pairing code using ZXing. Wi-Fi addresses are preferred; the phone allows selecting another local interface. macOS captures camera frames with AVFoundation, detects QR codes locally using Vision, validates the offer and runs the existing pinned TLS pairing exchange. No new listening port or unauthenticated input route is introduced. Camera access is requested only when the user opens the scanner.
+MouseCaptureLease 用 CGAssociateMouseAndMouseCursorPosition 与 NSCursor 平衡光标关联和可见性；重复开始、释放、销毁必须幂等。仅安装局部 NSEvent 监听，不安装全局事件 tap，也不申请 Mac 辅助功能或输入监控权限。窗口失焦、Esc、模式/设备切换、断线、手机暂停均结束捕获。
 
-## Multi-phone client (0.5.0)
+手机将控制权绑定到 WebSocket 实例；另一连接不能抢占或停止现有控制者。Mac 每两秒保活，手机每 500ms 检查授权、锁屏与六秒租期。停止时移除指针和暂停浮层，并释放其 FLAG_KEEP_SCREEN_ON；不会改写系统息屏设置或解锁手机。
 
-`Client` owns device records and explicit input targets; `DeviceSession` owns one transport, authentication lifecycle, input pipeline, draft and editor snapshot. UI bindings follow the preview phone; input routes to a frozen set of recipients chosen at enqueue time. Switching/recipient edits invalidate queued work and the composition view. Every connection serializes its own authentication, input, snapshot and heartbeat requests. Failures propagate a group pause, not a replay or a rollback. Records store only display metadata; tokens remain keyed by certificate fingerprint in Keychain. Android stores the peer display name atomically with the credential hash and publishes authenticated connection state to its UI.
+## 连续触摸与指针显示
 
+Mac 将相对位移映射为 0…10000 的归一化坐标，以最高 30Hz 采样，控制请求间隔至少约 33.3ms。只合并相邻同类移动，保留 down/up 等顺序边界；控制队列上限 32，过载停止控制。实际响应速度受往返延迟和同连接其他请求影响。
 
-## 局域网发现（0.7.0）
+Android 按真实显示尺寸映射坐标。PointerDrag 用 `willContinue` / `continueStroke` 延续同一个触点，一段执行中只保留最新待移动位置，up 必须最终释放。停止或撤销会丢弃待移动并尽力结束手势；不能撤销已经发生的按下或目标应用的松手行为。
 
-Android 在 TLS 监听成功后用 NsdManager 注册 `_wri-input._tcp.`；接收停止时撤销，注册失败每 30 秒重试。NSD 在可用网络发布当前地址。服务名使用证书摘要前缀，TXT 仅包含 `v=1` 与公开证书 SHA-256 `id`，不广播设备友好名称、配对码、密钥或输入内容。
+`touch_not_down` 只中断本次拖动。Mac 保持捕获，将松开前的后续拖动降为指针移动，直到物理松开再按下；不得自动补发 touch-down。
 
-Mac 使用 Bonjour 搜索和周期解析服务，只接受已保存指纹对应的私有 IPv4 地址，缓存 35 秒。服务广播是不可信的路由提示：每次连接仍固定原证书指纹并使用原设备密钥认证，认证成功才保存新地址。单设备自动尝试间隔至少 30 秒；手动连接不受此间隔限制。曾发起连接的设备遇到网络失败后允许重连，显式断开／忘记／认证失败停止自动重连。应用重启不自动连接所有手机。重连成功暂停整组输入，不回放旧队列。
+PointerMotion 通过 Choreographer 做 32ms 线性插值，仅平滑显示，不修改触控坐标。静止或停止时取消帧回调；30Hz 网络采样不等于手机显示帧率保证。
 
-Bonjour 被禁用、访客网络隔离或无私有 IPv4 时保留扫码路径；自动发现不突破网络隔离。公开指纹会使局域网观察者关联同一设备在不同网络上的广播，但它不提供认证权限。
+## 键鼠协同与焦点
 
-## 可选手机控制
+ControlKeysView 继承原生 CommitTextView，在持有鼠标捕获的同时接收中文输入。每 200ms 尝试刷新普通输入框快照，忙或按住左键时跳过。有效快照恢复文字；无输入框、密码框或快照不可用时禁止协同打字，但鼠标仍可操作。
 
-PhoneControlService 独立于 RemoteIme，仅用户在 Android 系统中主动开启后可用。Protocol 校验控制动作，InputServer 将其绑定到 WebSocket 实例；ReceiverService 在主线程再次检查连接与配对认证后执行。关闭连接会立即释放对应控制者；每 500ms 检查撤销、锁屏和六秒租期，释放时移除覆盖层。
+点击或返回会丢弃本地组词和旧快照，等待新的输入目标。editorId 变化也会丢弃旧组词。没有输入框时，方向键、Tab、Enter 可用于可访问节点操作；有效输入框内优先由原生编辑器处理。Esc 在组词时交给输入法，否则退出捕获。
 
-Mac ControlKeysView 只处理自身获得焦点时的键盘事件，按两秒间隔保活。DeviceSession 将控制请求与已有输入／快照请求互斥执行，暂停通过有序 stop 收尾，并用 generation / controlEpoch 丢弃迟到响应。Client 切换设备时停止原设备控制；广播文字功能不参与控制路由。手机端仅传回结果状态，不传回节点树、控件文本或屏幕图像。
+文字拒绝不能调用整个控制会话的停止逻辑。失焦清理只处理本视图的 marked range，不能调用全局输入上下文的清理方法，以免破坏其他 Mac 软件的中文选词。
 
-节点点击和系统导航使用 [Android AccessibilityService](https://developer.android.com/reference/android/accessibilityservice/AccessibilityService) 与 [AccessibilityNodeInfo](https://developer.android.com/reference/android/view/accessibility/AccessibilityNodeInfo) 标准能力。控件不支持动作时直接提示，不用猜测坐标点击兜底。
+## 换网发现
 
-### 鼠标捕获与触控
+Android 监听成功后发布 `_wri-input._tcp.`，停止接收时撤销；TXT 只包含协议版本与公开证书指纹。Mac 只考虑已保存指纹对应的私有 IPv4 地址，候选缓存 35 秒，自动重连每设备至少间隔 30 秒。
 
-0.9.0 的 ControlKeysView 在授权会话确认和本地焦点校验之后使用 CGAssociateMouseAndMouseCursorPosition 固定 Mac 光标，通过局部 NSEvent 监听接收相对位移和左右键。MouseCaptureLease 平衡隐藏／显示与解除／恢复关联，退出和析构均可幂等释放。没有全局事件 tap；操作期间焦点离开立即退出。手机按当前显示屏真实尺寸绘制归一化坐标指针，通过 dispatchGesture 执行短单击，右键使用全局返回。移动只更新指针，不采集屏幕内容。
+广播是未经信任的路由提示。连接仍使用原证书指纹和密钥，认证成功才保存新地址。手动断开、忘记或认证失败停止自动重连；恢复后文字保持暂停，控制需要重新点击开始。访客网络隔离或组播受限时发现可能失败，重新扫码也不能绕过网络隔离。

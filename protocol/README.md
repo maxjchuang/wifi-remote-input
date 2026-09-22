@@ -1,9 +1,13 @@
-# Protocol v1 — MVP
+# Protocol v1 — Text input and phone control
+
+Current implementation: macOS / Android 0.9.6. Protocol version remains 1; optional control actions extend the existing authenticated connection.
+
+[Architecture](../docs/architecture.md) · [Development and acceptance](../docs/development.md)
 
 SPDX-License-Identifier: AGPL-3.0-only
 
 Endpoint: `wss://<private IPv4>:8765/input`. No plaintext HTTP input endpoint.
-Both peers require TLS 1.3; the Android minimum is API 29. TLS 1.2-only reconnects stalled during URLSession/JVM interoperability validation, so this MVP does not enable that fallback. Android owns a persistent, app-private self-signed RSA certificate. The user scans a QR code displayed by the phone, transferring its **complete SHA-256 certificate fingerprint**, address and one-time code to the Mac; manual entry remains available. The Mac checks the DER leaf certificate hash before transmitting any pairing code, credential or input. Never obtain a fingerprint from an unauthenticated network endpoint. No trust-on-first-use fallback or redirect is allowed.
+Both peers require TLS 1.3; the Android minimum is API 29. TLS 1.2-only reconnects stalled during URLSession/JVM interoperability validation, so this MVP does not enable that fallback. Android owns a persistent, app-private self-signed RSA certificate. The user scans a QR code displayed by the phone, transferring its **complete SHA-256 certificate fingerprint**, address and one-time code to the Mac. Pairing UI uses QR scanning. The Mac checks the DER leaf certificate hash before transmitting any pairing code, credential or input. Never obtain a fingerprint from an unauthenticated network endpoint. No trust-on-first-use fallback or redirect is allowed.
 
 ## Pairing and authentication
 
@@ -12,7 +16,7 @@ Both peers require TLS 1.3; the Android minimum is API 29. TLS 1.2-only reconnec
 3. On success, Android consumes the code and returns `{"version":1,"type":"result","status":"paired","token":"…"}`. The token is 32 random bytes encoded as 64 lowercase hex characters. The session is now authenticated.
 4. Mac stores the token in Keychain. Android persists only its SHA-256 hash in private preferences, with app backups disabled. The certificate private key is stored in the app's private no-backup directory. The PKCS12 container password is not an additional security boundary; Android's app sandbox is.
 5. Reconnection uses `auth` with `{"token":"…"}` over the same pinned TLS connection and receives status `authenticated`.
-6. MVP supports **one paired Mac**. A successful new pairing replaces the old token. Revocation invalidates authorization for subsequent input messages on existing connections as well as future connections.
+6. Each phone supports **one paired Mac**. A successful new pairing replaces the old token. Revocation invalidates authorization for subsequent input messages on existing connections as well as future connections.
 
 The bearer device key is protected by pinned TLS; no custom cryptography or unencrypted challenge/response layer is used. TLS protects against network replay. Someone with access to the phone display or Mac Keychain can authorize input; these endpoints are trusted.
 
@@ -31,12 +35,13 @@ The bearer device key is protected by pinned TLS; no custom cryptography or unen
 | `editor.edit` | String fields: `editorId`, `expectedHash`, `text`, `selectionStart`, `selectionEnd` | Compare and apply single-phone mirrored edit (0.6.0+) |
 | `editor.snapshot` | `{}` | Authenticated read of the focused non-password editor (0.4.0+) |
 | `session.ping` | `{}` | Return `pong` after authentication |
+| `control.action` | `action`, plus string `x` / `y` for coordinate actions | Optional authenticated phone control; schema below |
 
 Every request returns one `result` with `version:1` and a non-sensitive `status` string. The client sends **only one request at a time per connection**, so v1 does not need message IDs. No automatic retries of input are permitted: a disconnect before a response makes delivery uncertain.
 
 Common statuses: `ok`, `paired`, `authenticated`, `pong`, `unauthorized`, `authentication_failed`, `password_blocked`, `device_locked`, `no_editor`, `editor_rejected`, `editor_timeout`, `invalid_message`, `unsupported_version`, `unknown_type`, `invalid_text`, `invalid_key`, `too_large`, `rate_limited`.
 
-`ok` means the InputConnection accepted the operation, not that the target app persisted it. Enter uses the editor's action (Search/Send/Done, etc.) unless the editor requests a literal Enter. Other keys use Android down/up events.
+For editor operations, `ok` means the InputConnection accepted the operation, not that the target app persisted it. For gestures it acknowledges dispatch acceptance, not completion or the target app’s effect. Enter uses the editor's action (Search/Send/Done, etc.) unless the editor requests a literal Enter. Other keys use Android down/up events.
 
 ## Boundaries
 
@@ -46,13 +51,13 @@ Common statuses: `ok`, `paired`, `authenticated`, `pong`, `unauthorized`, `authe
 - All text-password, visible-password, web-password and numeric-password editor types are blocked, including keys. Null/unknown editor classes are rejected. Locked phones reject input.
 - InputConnection operations run on Android's main thread. Finished/inactive editor sessions cannot receive input.
 - No application logging of input, clipboard, pairing codes, device keys or session keys. Errors never echo request payloads.
-- `key.down/up`, clipboard, mouse, accessibility and discovery are reserved for future versions and currently rejected.
+- Raw `key.down/up`, clipboard-transfer and arbitrary command messages are unsupported. Mouse and accessibility actions use only the `control.action` allowlist below; discovery uses DNS-SD outside this connection.
 
 ## Pairing QR (0.2.0)
 
 Phone-generated QR text is UTF-8 JSON: `kind` = `wifi-remote-input`, `version` = `1`, `address` = private IPv4 plus port, `fingerprint` = full SHA-256 certificate hash, `code` = eight ASCII digits (preserve leading zeros). It contains no long-term device key. The existing `pair` request consumes this code; server-side expiration, attempt limits and single-use rules apply unchanged. Creating a new QR invalidates the previous code.
 
-The Mac validates the QR schema, size (2 KiB), private address and fingerprint before connecting. It accepts exactly one valid pairing QR per frame, pins that certificate before sending the one-time code, and then saves the resulting key in Keychain. Camera frames remain in memory, are processed locally with Vision and are never recorded or uploaded. Capture stops when the sheet closes or a valid QR is accepted. Unrelated QR codes are not opened as links.
+The Mac validates the QR schema, size (2 KiB), private address and fingerprint before connecting. It accepts exactly one valid pairing QR per frame, pins that certificate before sending the one-time code, and then saves the resulting key in Keychain. Camera frames remain in memory, are processed locally with Vision and are never recorded or uploaded. Capture stops when the scanner closes or a valid QR is accepted. Unrelated QR codes are not opened as links.
 
 ## Focused editor snapshot (0.4.0)
 
@@ -89,11 +94,18 @@ DNS-SD 服务类型 `_wri-input._tcp.`，端口指向现有 TLS WebSocket 接收
 
 ## 可选手机控制（0.8.0）
 
-`control.action` 的 payload 严格为 `{ "action": "start" }`。允许 start、stop、ping、back、home、recents、next、previous、left、right、up、down、click、long_click、scroll_up、scroll_down；未知动作或多余字段拒绝。仅通过已认证连接调用，返回普通 result/status。
+`control.action` 分为两种严格 schema：
+
+| 动作 | payload 字段 |
+| --- | --- |
+| start、pointer_start、stop、ping、back、home、recents、next、previous、left、right、up、down、click、long_click、scroll_up、scroll_down | 仅字符串 `action` |
+| pointer_move、pointer_tap、pointer_down、pointer_drag、pointer_up | 字符串 `action`、`x`、`y`，不得缺少或附加字段 |
+
+例如 `{ "action": "start" }`。未知动作或多余字段拒绝。仅通过已认证连接调用，返回普通 result/status。
 
 服务端将控制权绑定到 WebSocket 实例，start 获取控制权；另一实例返回 control_busy。Mac 仅在本地控制区聚焦期间每两秒 ping；六秒无活动、断线、撤销认证、锁屏、用户暂停、接收服务停止或辅助功能退出都会释放控制权。新连接必须重新 start，不重放操作。stop 可重复调用，其他会话不能停止当前控制者。普通文字输入不要求此权限。
 
-状态包括 accessibility_disabled、control_paused、control_busy、device_locked、no_controls、selection_changed、password_blocked、action_unavailable。选中控件在手机本地维护，不发送文本、节点树或截图。窗口更新后清除选中；执行前刷新节点并核对可见性、当前窗口、密码属性。没有坐标或任意 Intent／Shell 命令入口。
+状态包括 accessibility_disabled、control_paused、control_busy、device_locked、no_controls、selection_changed、password_blocked、action_unavailable。选中控件在手机本地维护，不发送文本、节点树或截图。窗口更新后清除选中；执行前刷新节点并核对可见性、当前窗口、密码属性。坐标仅通过下述白名单动作提供，不接受任意 Intent／Shell 命令。
 
 ### 鼠标捕获扩展（0.9.0）
 
@@ -108,3 +120,19 @@ DNS-SD 服务类型 `_wri-input._tcp.`，端口指向现有 TLS WebSocket 接收
 `pointer_down`、`pointer_drag`、`pointer_up` 使用与 pointer_move 相同的 x/y 严格归一化坐标字段。down 建立 willContinue=true 的触摸，drag 通过 continueStroke 延续同一根手指，up 用 willContinue=false 结束。未建立 down 的 drag 返回 touch_not_down；重复 down 返回 gesture_busy。旧 pointer_tap 保留兼容。
 
 Mac 仅合并相邻且同类型的 pointer_drag，不跨 down/up 合并；up 携带最终坐标。Android 单个手势分段执行中仅保存最新待移动坐标，up 标记不会被移动覆盖；等待当前段完成后释放。stop、失焦引发的停止、断线、超时与撤销会丢弃待移动位置并结束当前触摸。释放可能触发目标应用的松手行为，已发生的按下或拖动不能撤销。
+
+
+### 键鼠协同与错误恢复（当前客户端）
+
+键鼠协同不新增报文类型。`pointer_start` 建立控制会话，文字仍使用 `editor.snapshot` / `editor.edit` / `key.press`，与控制请求在同一连接上串行执行。协同快照每 200ms 尝试一次，忙或按住左键时跳过；有效快照才允许协同打字。点击/返回使旧快照失效，editorId 变化丢弃旧组词。控制及其文字不参与多机广播。
+
+| 状态 / 事件 | 当前客户端处理 |
+| --- | --- |
+| `no_editor`、`password_blocked`（输入框快照） | 清除文字快照并暂停文字，保留鼠标控制；有效新快照恢复文字 |
+| `snapshot_unavailable`、`editor_too_large` | 无有效镜像，不接受协同文字，鼠标仍可操作 |
+| `touch_not_down` | 保留捕获，本次拖动后续只移动指针；物理松开再按下才建立新触摸 |
+| `gesture_busy` 或按下时 `password_blocked` | 本次按下失败，不自动重试，等待物理松开 |
+| `gesture_unavailable`、`accessibility_disabled`、`device_locked`、`control_paused` | 停止本地控制并提示原因 |
+| 断线 / 认证失败 | 释放捕获，不重放文字和手势；重新认证不会恢复旧控制会话 |
+
+控制请求限速与文字/快照/保活共享服务端每秒 40 条的总预算，不能将它们当作独立限额。扩展协议时不得引入并行 exchange 或在确认丢失时补发触摸。TLS 互通测试验证封装与顺序，真实系统手势完成仍需手机验收。
