@@ -8,6 +8,7 @@
 <p align="center">点击、拖动、返回，再直接打字——不用在鼠标控制和文字输入之间来回切换。<br>同一 Wi-Fi，扫码连接，不用数据线。</p>
 
 <p align="center">
+  <a href="https://github.com/maxjchuang/wifi-remote-input/releases">下载安装</a> ·
   <a href="#界面一览">界面一览</a> ·
   <a href="#能做什么">能做什么</a> ·
   <a href="#用鼠标控制手机">手机控制</a> ·
@@ -84,7 +85,17 @@ flowchart LR
 
 你需要一台运行 **macOS 13 或更新版本**的 Mac，以及一台运行 **Android 10 或更新版本**的手机。两端安装 WiFi Remote Input，并连接同一 Wi-Fi；首次扫码需要 Mac 摄像头。
 
-当前项目仍在持续开发，仓库提供源码，安装包需要自行构建，步骤见[构建与验证](docs/development.md)。已经拿到 `.app` 和 `.apk` 的用户可以直接安装；手机不需要开启开发者模式、USB 调试，也不需要 Root。
+可以从 [GitHub 发布页](https://github.com/maxjchuang/wifi-remote-input/releases) 下载打包好的应用。当前提供 **v0.10.2 预览版**：
+
+| 平台 | 下载 | 要求 |
+| --- | --- | --- |
+| Mac | [下载 Mac 应用 ZIP](https://github.com/maxjchuang/wifi-remote-input/releases/download/v0.10.2/WiFiRemoteInput-0.10.2-macOS.zip) | Apple Silicon（M 系列芯片），macOS 13+；应用版本 0.10.2 |
+| Android | [下载 Android APK](https://github.com/maxjchuang/wifi-remote-input/releases/download/v0.10.2/WiFiRemoteInput-0.10.1-debug.apk) | Android 10+；应用版本 0.10.1 |
+| 文件校验 | [SHA256SUMS.txt](https://github.com/maxjchuang/wifi-remote-input/releases/download/v0.10.2/SHA256SUMS.txt) | 校验下载文件是否完整 |
+
+Mac 下载后解压，将 `WiFi Remote Input.app` 拖入「应用程序」；更新时先退出正在运行的旧版。Android 下载后在手机确认安装，再按下方步骤启用输入法并配对。手机不需要开启开发者模式、USB 调试，也不需要 Root。
+
+这是开发预览包：Mac 使用本地临时签名，尚未经过 Apple 公证，系统可能阻止首次打开；Android 使用调试签名，覆盖安装要求原应用签名相同。Intel Mac 请参考[源码构建步骤](docs/development.md)。下载前请查看[发布说明与已知问题](https://github.com/maxjchuang/wifi-remote-input/releases/tag/v0.10.2)。
 
 已在 MacBook Pro 与小米 13 / HyperOS 上验证基本输入和扫码配对，Android 新界面也已通过用户实机验收。其他机型与应用的表现可能有所不同。
 
