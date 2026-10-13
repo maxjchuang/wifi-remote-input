@@ -279,3 +279,55 @@ Swift 41 项测试、release构建、签名及git diff --check通过。新增回
 ## Android 0.9.6 — 输入法面板入口
 
 输入法面板除「切换输入法」按钮外可点击进入 MainActivity，复用已有任务。Android 49 项测试、lint 与 assembleDebug 通过；面板跳转仍需手机覆盖安装后验收，未声称已完成真机点击测试。
+
+## 0.9.7 — 捕获排队、反向拖动与点击区分
+
+- 开始控制等待旧 stop；各控制任务只清理自身任务槽，避免旧请求完成时清掉新请求。暂停不再对 active 重复发送 stop。周期快照/心跳不抢占排队控制；启动中提示并抑制重复点击。
+- Mac 拖动合并保留方向变化；Android 缓存有界折线路径，修复忙碌期间最新点覆盖反向拐点。停止仍丢弃待移动并释放触摸。
+- 快速短按发送单次 pointer_tap；180ms 等待或 60 归一化单位位移后建立持续触摸，退出取消计时器。系统最终长按时机仍依赖目标 App 和网络。
+- scripts/test.sh：Swift 45 项、Android 50 项通过，含 TLS 互通、Android lint 与 APK 构建；Mac release 构建、签名和 diff 检查通过。新增等待 stop 重启、上下来回路径长度/转折、快速点击无 down、持续按住/up、退出取消延迟 down 回归。
+- 未完成这三个现象的手机端实测；尤其目标 App 对反向滚动的处理仍需两端更新后验证。产物为 artifacts/0.9.7/WiFi Remote Input.app 与 artifacts/WiFiRemoteInput-0.9.7-debug.apk。
+
+## macOS 0.9.8 — 捕获首次点击与退出清理
+
+用户报告 0.9.7 点击无法捕获，本次在当前工作台尝试成功，尚未稳定复现间歇失败。代码确认 ControlKeysView 接受后台窗口首次点击但未主动 makeKey；修补为先激活窗口、确认 firstResponder，再请求控制。同时删除 stop 中对同一 DeviceSession 的重复停止调用，重复清理不再产生额外 stop。
+
+Swift 46 项测试、release 构建、签名与 diff 检查通过；新增模拟后台窗口第一次点击激活及重复 stop 只发一次的回归。实际启动 0.9.8 并连接小米，点击进入“键鼠协同中 / 鼠标捕获中”，Esc 退出成功。此结果不证明所有间歇失败已消除。Android 沿用 0.9.7，未改动。
+
+## macOS 0.9.9 — 控制区插入光标状态
+
+控制区继承 NSTextView 以支持中文输入，旧版暂停后仍可能持有 firstResponder，默认插入光标因此残留。现在 shouldDrawInsertionPoint 与实际绘制均以 permitted 为条件；仅捕获中、窗口/视图聚焦且手机存在可用普通输入快照时显示。退出立即清除编辑显示并刷新；控制区鼠标指针使用箭头。
+
+Swift 46 项测试通过，扩展焦点回归验证无输入框不绘制光标、有快照允许编辑、暂停后光标透明且内容清空。Release 构建、签名与 diff 检查通过。已启动 0.9.9 并进入控制页，连接手机步骤自动化连续超时，未完成连接后的视觉验收。这不等于间歇捕获问题已解决。Android 沿用 0.9.7。
+
+## 0.9.10 — 两端指针外观
+
+Mac 覆盖控制区 NSTextView 的 cursorUpdate/mouseMoved/mouseEntered，使用箭头而非 I 型；Android 使用复用 Path/Paint 的黑底白边箭头，尖端对齐触控坐标。Mac release 构建和签名验证、Android lint 与 assembleDebug、diff 检查通过。此次仅外观修改，未新增测试；两端实际悬停和不同背景下的可见性仍需安装验收。
+
+## Android 0.9.11 — 反向路径按端点续接
+
+用户确认反向时箭头仍移动，但页面不继续拖动，0.9.7 的折线路径保留不足以解决实测问题。检查 AOSP GestureDescription.MotionEventGenerator，框架按时间采样路径，路径内部几何顶点并不自动成为事件。此前将多个位置压在同一个 24ms 片段，仍可能漏掉反向点。改为每个待移动位置作为一个 continuation 片段端点，等待该段完成后继续同一触点；释放必须等待最后位置，撤销/停止仍清除积压并抬起。
+
+Android 51 项测试全部通过，包含真实框架采样器在 8/16/100ms 间隔下保留反向端点和 continuedStrokeId 链检查，以及既有 TLS 互通。lint 与 assembleDebug 通过。该结果验证实现链路，不证明用户手机的反向滑动问题已经解决；仍需安装 APK 在原目标 App 实测。Mac 无改动，沿用 0.9.10。
+
+参考：[AOSP GestureDescription](https://github.com/aosp-mirror/platform_frameworks_base/blob/master/core/java/android/accessibilityservice/GestureDescription.java)。未读取或记录手机输入内容。
+
+## 0.10.0 — 手机诊断与 Mac 推送 APK
+
+Swift 47 项、Android 57 项测试通过；Android lint、assembleDebug 与 Mac release 构建通过。新增覆盖日志白名单/容量/关闭/清空、导出文档入口、更新需手动授权及认证、连接所有权、过期/乱序/超大分片、摘要不符、包名/签名不符、同版本和降级拒绝，以及成功就绪。APK 元数据校验在 Robolectric 中通过受控 PackageManager 数据验证，不等于真实系统安装验收。
+
+Swift 测试验证只向选定设备按顺序上传与暂停输入；Swift Smoke ↔ Kotlin InputServer 真实 TLS 测试验证 begin/chunk/finish 和数据完整性，更新处理回调为替身。尚未完成真机 APK 推送及系统覆盖安装，首次须手动安装 0.10.0，后续用相同签名、更高 versionCode 包验收。日志不采集用户内容，不自动上传，未接入 GitHub Releases。
+
+## 0.10.1 — 手机日志自动同步到 Mac /tmp
+
+Swift 48 项、Android 58 项测试通过，包含认证/撤销/严格字段保护、真实 TLS 心跳携带诊断内容、Mac 自动保存与设备隔离、超限拒绝、空快照覆盖和 0600 文件权限。Android lint、APK 与 Mac release 构建通过。日志随空闲心跳自动同步至 `/tmp/wifi-remote-input/`，不再要求手动导出；忙碌时延后，文件为有界最近事件快照。尚未完成新版手机实机自动同步验收。
+
+## macOS 0.10.2 — 控制面板实际点击范围
+
+复现 0.10.1：鼠标坐标点击中央提示无状态变化，辅助功能定位 NSTextView 点击却可成功，先前验收没有覆盖真实可见热区。以独立 NSView 容器铺满控制面板，布局时将编辑器铺满 bounds，统一命中编辑器，不让文字固有高度决定点击范围。Swift 49 项测试通过，新增中央/边缘命中与缩放测试；release 构建、签名通过。实际同坐标点击修复版已触发手机控制请求，返回 device_locked 对应解锁提示；当时手机锁屏，未完成修复版实际捕获验收。Android 无改动，沿用 0.10.1。
+
+## 2026-10-13 — 提交前复核
+
+本机运行 Mac 0.10.2，收到的手机诊断日志标明 Android 0.10.1，确认自动同步至 `/tmp/wifi-remote-input/` 已实际生效。日志仍包含 GESTURE_CANCELLED 和 TOUCH_NOT_DOWN，不能据此宣布拖动问题已彻底解决；APK 推送后的系统安装流程仍缺少完整实机验收记录。
+
+本次 Swift 49 项测试及 git diff --check 通过。Android 复跑在解析 com.android.application 8.9.2 插件时失败，离线重试同样失败，未进入 Android 测试；此前 58 项通过属于历史验证结果。

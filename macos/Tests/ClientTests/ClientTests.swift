@@ -7,6 +7,8 @@ import AppKit
 private final class FakeConnection: SessionConnection {
     var inputs: [InputEvent] = []
     var controls: [[String: String]] = []
+    var updates: [(String, [String: String])] = []
+    var diagnostics: String?
     var name: String
     var inputDelay: UInt64 = 0
     var rejection: String?
@@ -19,7 +21,11 @@ private final class FakeConnection: SessionConnection {
             lastComputerName = payload["deviceName"]
             return ["status": type == "pair" ? "paired" : "authenticated", "token": "test-only", "deviceName": name]
         }
-        if type == "session.ping" { return ["status": "pong"] }
+        if type.hasPrefix("update.") {
+            updates.append((type, payload))
+            return ["status": type == "update.finish" ? "update_ready" : "ok"]
+        }
+        if type == "session.ping" { var reply: [String: Any] = ["status": "pong"]; if let diagnostics { reply["diagnostics"] = diagnostics }; return reply }
         if type == "editor.snapshot" { return snapshot }
         if inputDelay > 0 { try await Task.sleep(nanoseconds: inputDelay) }
         if let rejection { return ["status": rejection] }
@@ -29,12 +35,50 @@ private final class FakeConnection: SessionConnection {
     }
 }
 
+private final class ActivationTestWindow: NSWindow {
+    var activated = false
+    override var isKeyWindow: Bool { activated }
+    override var isVisible: Bool { true }
+    override func makeKey() { activated = true }
+}
 private final class SnapshotTestWindow: NSWindow {
     override var isKeyWindow: Bool { true }
     override var isVisible: Bool { true }
 }
 
 final class ClientTests: XCTestCase {
+    @MainActor func testControlSurfaceHitsCenterAndEdgesWithoutText() {
+        let surface = ControlSurfaceView(frame: NSRect(x: 20, y: 30, width: 600, height: 300))
+        surface.layout()
+        XCTAssertEqual(surface.editor.frame, surface.bounds)
+        for point in [NSPoint(x: 21, y: 31), NSPoint(x: 320, y: 180), NSPoint(x: 619, y: 329)] {
+            XCTAssertTrue(surface.hitTest(point) === surface.editor)
+        }
+        XCTAssertNil(surface.hitTest(NSPoint(x: 0, y: 0)))
+        surface.frame.size = NSSize(width: 300, height: 100); surface.layout()
+        XCTAssertEqual(surface.editor.frame, surface.bounds)
+    }
+
+    @MainActor func testAutomaticDiagnosticsAreIsolatedBoundedAndReplaceable() async throws {
+        let (client, fakes, _) = fixture(); try await connect(client)
+        client.active.fingerprint = UUID().uuidString
+        fakes[0].diagnostics = "safe event one"
+        await client.active.checkConnection()
+        let file = try XCTUnwrap(client.active.diagnosticFile)
+        defer { try? FileManager.default.removeItem(at: file); client.disconnectAll() }
+        XCTAssertTrue(file.path.hasPrefix("/tmp/wifi-remote-input/phone-"))
+        XCTAssertEqual(try String(contentsOf: file), "safe event one")
+        XCTAssertNil(client.devices[1].diagnosticFile)
+        let attributes = try FileManager.default.attributesOfItem(atPath: file.path)
+        XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+        fakes[0].diagnostics = String(repeating: "x", count: 32769)
+        await client.active.checkConnection()
+        XCTAssertEqual(try String(contentsOf: file), "safe event one")
+        fakes[0].diagnostics = ""
+        await client.active.checkConnection()
+        XCTAssertEqual(try String(contentsOf: file), "")
+    }
+
     @MainActor func testControlTypingResumesFromSnapshotWithoutBroadcastAndMissingEditorKeepsMouse() async throws {
         let (client, fakes, _) = fixture(); try await connect(client)
         client.startControl(mouse: true)
@@ -81,6 +125,86 @@ final class ClientTests: XCTestCase {
         try await Task.sleep(nanoseconds: 250_000_000)
         XCTAssertFalse(view.capturing); XCTAssertEqual(associations, [false, true])
         view.stop(); client.disconnectAll(); window.close()
+    }
+    @MainActor func testImmediateRestartWaitsForStopInsteadOfDroppingStart() async throws {
+        let (client, fakes, _) = fixture(); try await connect(client)
+        client.startControl(mouse: true); try await Task.sleep(nanoseconds: 60_000_000)
+        fakes[0].inputDelay = 60_000_000
+        client.active.stopControl(); client.active.sendControl("pointer_start")
+        try await Task.sleep(nanoseconds: 250_000_000)
+        XCTAssertTrue(client.active.controlActive)
+        XCTAssertEqual(fakes[0].controls.suffix(2).compactMap { $0["action"] }, ["stop", "pointer_start"])
+        client.active.sendControl("pointer_down", coordinates: ["x": "500", "y": "500"])
+        for y in [400, 300, 400, 500] {
+            client.active.sendControl("pointer_drag", coordinates: ["x": "500", "y": String(y)])
+        }
+        client.active.sendControl("pointer_up", coordinates: ["x": "500", "y": "500"])
+        try await Task.sleep(nanoseconds: 600_000_000)
+        let points = fakes[0].controls.filter { $0["action"] == "pointer_drag" }.compactMap { $0["y"] }
+        XCTAssertTrue(points.contains("300")); XCTAssertEqual(points.last, "500")
+        client.disconnectAll()
+    }
+    @MainActor func testQuickClickIsAtomicAndHeldPressIsReleased() async throws {
+        let (client, fakes, _) = fixture(); try await connect(client)
+        let window = SnapshotTestWindow(contentRect: NSRect(x: 0, y: 0, width: 320, height: 200), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let view = ControlKeysView(frame: NSRect(x: 0, y: 0, width: 320, height: 200))
+        view.mouseCapture = MouseCaptureLease(associate: { _ in true }, hide: {}, show: {})
+        view.client = client; view.configureEditor(); window.contentView = view
+        view.requestCapture(); try await Task.sleep(nanoseconds: 120_000_000)
+        XCTAssertTrue(view.capturing)
+        view.pressPointer(); view.releasePointer()
+        try await Task.sleep(nanoseconds: 120_000_000)
+        XCTAssertEqual(fakes[0].controls.last?["action"], "pointer_tap")
+        XCTAssertFalse(fakes[0].controls.contains { $0["action"] == "pointer_down" })
+        view.pressPointer(); try await Task.sleep(nanoseconds: 260_000_000)
+        XCTAssertEqual(fakes[0].controls.last?["action"], "pointer_down")
+        view.releasePointer(); try await Task.sleep(nanoseconds: 120_000_000)
+        XCTAssertEqual(fakes[0].controls.last?["action"], "pointer_up")
+        view.pressPointer(); view.stop(); try await Task.sleep(nanoseconds: 260_000_000)
+        XCTAssertEqual(fakes[0].controls.filter { $0["action"] == "pointer_down" }.count, 1)
+        client.disconnectAll(); window.close()
+    }
+    @MainActor func testFirstClickActivatesWindowAndStopIsNotDuplicated() async throws {
+        let (client, fakes, _) = fixture(); try await connect(client)
+        let window = ActivationTestWindow(contentRect: NSRect(x: 0, y: 0, width: 320, height: 200), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let view = ControlKeysView(frame: NSRect(x: 0, y: 0, width: 320, height: 200))
+        view.mouseCapture = MouseCaptureLease(associate: { _ in true }, hide: {}, show: {})
+        view.client = client; view.configureEditor(); window.contentView = view
+        XCTAssertFalse(window.isKeyWindow)
+        view.requestCapture(); try await Task.sleep(nanoseconds: 150_000_000)
+        XCTAssertTrue(window.isKeyWindow); XCTAssertTrue(view.capturing)
+        // A focused control surface without a phone editor must not draw a text caret.
+        XCTAssertFalse(view.shouldDrawInsertionPoint)
+        client.active.editorSnapshot = EditorSnapshot(editorId: "caret", text: "", selection: NSRange(location: 0, length: 0))
+        client.active.paused = false; view.synchronizeEditor()
+        XCTAssertTrue(view.permitted())
+        XCTAssertEqual(view.insertionPointColor, NSColor.labelColor)
+        view.stop(); view.stop()
+        XCTAssertFalse(view.shouldDrawInsertionPoint)
+        XCTAssertEqual(view.insertionPointColor, NSColor.clear)
+        XCTAssertEqual(view.string, "")
+        try await Task.sleep(nanoseconds: 150_000_000)
+        XCTAssertEqual(fakes[0].controls.filter { $0["action"] == "stop" }.count, 1)
+        client.disconnectAll(); window.close()
+    }
+    @MainActor func testUpdateStreamsOrderedChunksOnlyToSelectedPhone() async throws {
+        let (client, fakes, _) = fixture(); try await connect(client)
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".apk")
+        let data = Data(repeating: 42, count: 20000); try data.write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        client.active.pushUpdate(url)
+        XCTAssertTrue(client.active.updating); XCTAssertTrue(client.active.paused)
+        client.active.send("text.commit", value: "must not send during update")
+        try await Task.sleep(nanoseconds: 500_000_000)
+        XCTAssertFalse(client.active.updating)
+        XCTAssertEqual(fakes[0].updates.map { $0.0 }, ["update.begin", "update.chunk", "update.chunk", "update.chunk", "update.finish"])
+        let chunks = fakes[0].updates.filter { $0.0 == "update.chunk" }.map { $0.1 }
+        XCTAssertEqual(chunks.compactMap { $0["offset"] }, ["0", "8192", "16384"])
+        XCTAssertEqual(chunks.reduce(into: Data()) { $0.append(Data(base64Encoded: $1["data"]!)!) }, data)
+        XCTAssertTrue(fakes[1].updates.isEmpty); XCTAssertTrue(fakes[0].inputs.isEmpty)
+        XCTAssertTrue(client.active.updateStatus.contains("确认安装")); client.disconnectAll()
     }
     @MainActor private func fixture() -> (Client, [FakeConnection], UserDefaults) {
         let defaults = UserDefaults(suiteName: "wri-tests-" + UUID().uuidString)!
@@ -134,8 +258,8 @@ final class ClientTests: XCTestCase {
         client.active.sendControl("pointer_up", coordinates: ["x": "500", "y": "300"])
         client.active.sendControl("pointer_move", coordinates: ["x": "600", "y": "400"])
         try await Task.sleep(nanoseconds: 350_000_000)
-        XCTAssertEqual(fakes[0].controls.compactMap { $0["action"] }, ["pointer_start", "pointer_down", "pointer_drag", "pointer_up", "pointer_move"])
-        XCTAssertEqual(fakes[0].controls.compactMap { $0["x"] }, ["100", "400", "500", "600"])
+        XCTAssertEqual(fakes[0].controls.compactMap { $0["action"] }, ["pointer_start", "pointer_down", "pointer_drag", "pointer_drag", "pointer_up", "pointer_move"])
+        XCTAssertEqual(fakes[0].controls.compactMap { $0["x"] }, ["100", "200", "400", "500", "600"])
         XCTAssertTrue(fakes[1].controls.isEmpty); client.disconnectAll()
     }
     @MainActor func testSuccessfulMovementAndHeartbeatDoNotRestartMouseCapture() async throws {

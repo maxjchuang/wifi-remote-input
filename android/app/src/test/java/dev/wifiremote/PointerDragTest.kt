@@ -29,14 +29,17 @@ class PointerDragTest {
         assertFalse(sent.last().first.getStroke(0).willContinue()); complete()
         assertFalse(drag.holding); assertEquals("ok", drag.up()); assertEquals(2, sent.size)
     }
-    @Test fun motionCoalescesWhileBusyAndReleaseKeepsFinalCoordinates() {
+    @Test fun queuedMotionPreservesEndpointsAndReleasesOnlyAfterFinalPosition() {
         drag.down(PointF(10f, 20f))
         drag.move(PointF(20f, 30f)); drag.move(PointF(30f, 40f))
         assertEquals(1, sent.size); complete()
-        assertEquals(2, sent.size); assertArrayEquals(floatArrayOf(30f, 40f), end(1), .01f)
-        drag.move(PointF(40f, 50f)); drag.up(PointF(50f, 60f)); complete(1)
-        assertEquals(3, sent.size); assertArrayEquals(floatArrayOf(50f, 60f), end(2), .01f)
-        assertFalse(sent[2].first.getStroke(0).willContinue()); complete(2)
+        assertArrayEquals(floatArrayOf(20f, 30f), end(1), .01f)
+        drag.move(PointF(40f, 50f)); drag.up(PointF(50f, 60f))
+        complete(1); assertArrayEquals(floatArrayOf(30f, 40f), end(2), .01f)
+        assertTrue(sent[2].first.getStroke(0).willContinue())
+        complete(2); assertArrayEquals(floatArrayOf(40f, 50f), end(3), .01f)
+        complete(3); assertArrayEquals(floatArrayOf(50f, 60f), end(4), .01f)
+        assertFalse(sent[4].first.getStroke(0).willContinue()); complete(4)
         assertFalse(drag.holding)
     }
     @Test fun revocationOrStopDropsQueuedMotionButReleasesFinger() {
@@ -47,6 +50,43 @@ class PointerDragTest {
         assertEquals("control_paused", drag.down(PointF(1f, 2f)))
         allowed = true; drag.down(PointF(10f, 20f)); drag.move(PointF(100f, 200f)); drag.up(); complete()
         assertFalse(sent.last().first.getStroke(0).willContinue()); complete(); assertFalse(drag.holding)
+    }
+    @Test fun reversalWhileBusyKeepsTheTurningPoint() {
+        drag.down(PointF(10f, 100f))
+        drag.move(PointF(10f, 20f)); drag.move(PointF(10f, 100f)); drag.up(PointF(10f, 120f))
+        complete(0)
+        // The turn is an explicit endpoint, not merely a vertex in a 24ms polyline.
+        assertArrayEquals(floatArrayOf(10f, 20f), end(1), .01f)
+        assertTrue(sent[1].first.getStroke(0).willContinue())
+        complete(1)
+        assertArrayEquals(floatArrayOf(10f, 100f), end(2), .01f)
+        assertTrue(sent[2].first.getStroke(0).willContinue())
+        complete(2)
+        assertArrayEquals(floatArrayOf(10f, 120f), end(3), .01f)
+        assertFalse(sent[3].first.getStroke(0).willContinue())
+        complete(3); assertFalse(drag.holding)
+    }
+    @Test fun frameworkSamplingKeepsReversalAndContinuationIdentity() {
+        drag.down(PointF(10f, 100f))
+        drag.move(PointF(10f, 20f)); drag.move(PointF(10f, 100f))
+        complete(0); complete(1); complete(2)
+        val generator = Class.forName("android.accessibilityservice.GestureDescription\$MotionEventGenerator")
+        val method = generator.getMethod("getGestureStepsFromGestureDescription", GestureDescription::class.java, Int::class.javaPrimitiveType)
+        for (interval in listOf(8, 16, 100)) {
+            val finalPoints = sent.map { (gesture, _) ->
+                val steps = method.invoke(null, gesture, interval) as List<*>
+                val step = steps.last()!!
+                (step.javaClass.getField("touchPoints").get(step) as Array<*>).first()!!
+            }
+            assertEquals(20f, finalPoints[1].javaClass.getField("mY").getFloat(finalPoints[1]), .01f)
+            assertEquals(100f, finalPoints[2].javaClass.getField("mY").getFloat(finalPoints[2]), .01f)
+            for (i in 1..2) {
+                val point = finalPoints[i]; val previous = finalPoints[i - 1]
+                assertEquals(previous.javaClass.getField("mStrokeId").getInt(previous), point.javaClass.getField("mContinuedStrokeId").getInt(point))
+                assertFalse(point.javaClass.getField("mIsEndOfPath").getBoolean(point))
+            }
+        }
+        drag.up(); complete(); assertFalse(drag.holding)
     }
     @Test fun cancellationAndRejectionCannotLeaveSoftwareHoldingState() {
         accepted = false; assertEquals("gesture_unavailable", drag.down(PointF(10f, 20f))); assertFalse(drag.holding)

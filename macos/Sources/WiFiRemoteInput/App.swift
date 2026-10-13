@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import SwiftUI
 import Combine
+import CryptoKit
 import RemoteCore
 
 protocol SessionConnection: AnyObject {
@@ -47,6 +48,7 @@ extension Transport: SessionConnection {}
     @Published var connected = false
     @Published var busy = false
     @Published private(set) var controlActive = false
+    @Published private(set) var controlStarting = false
     @Published private(set) var pointerMode = false
     var pointerControlStates: AnyPublisher<Bool, Never> {
         $controlActive.combineLatest($pointerMode)
@@ -56,25 +58,37 @@ extension Transport: SessionConnection {}
     @Published private(set) var controlStatus = "点击捕获鼠标 · 请看手机上的圆形指针"
     private var controlTask: Task<Void, Never>?
     private var controlEpoch = UUID()
+    private var controlTaskID = UUID()
     private var lastPointerSend = Date.distantPast
+    private var lastControlCoordinates: [String: String] = [:]
     private var dragInterrupted = false
     private var dragNotice: String?
     func stopControl() {
         guard controlActive || controlTask != nil else { return }
-        controlActive = false; pointerMode = false; dragInterrupted = false; dragNotice = nil; controlQueue.removeAll(); controlEpoch = UUID()
+        controlActive = false; controlStarting = false; pointerMode = false; dragInterrupted = false; dragNotice = nil; controlQueue.removeAll(); controlEpoch = UUID()
         controlStatus = "控制已暂停 · 点击控制区继续"
         sendControl("stop")
     }
     func sendControl(_ action: String, coordinates: [String: String] = [:]) {
-        guard connected else { return }
+        guard connected, !updating || action == "stop" else { return }
         guard action == "start" || action == "pointer_start" || action == "stop" || controlActive else { return }
-        if controlTask != nil && action != "stop" {
+        if controlTask != nil && !["stop", "start", "pointer_start"].contains(action) {
             guard controlActive, action != "ping", action != "start", action != "pointer_start" else { return }
-            if ["pointer_move", "pointer_drag"].contains(action), controlQueue.last?.0 == action { controlQueue.removeLast() }
+            if controlQueue.last?.0 == action {
+                if action == "pointer_move" { controlQueue.removeLast() }
+                else if action == "pointer_drag", let tail = controlQueue.last {
+                    let origin = controlQueue.dropLast().last?.1 ?? lastControlCoordinates
+                    if Self.sameDirection(origin, tail.1, coordinates) { controlQueue.removeLast() }
+                }
+            }
             guard controlQueue.count < 32 else { stopControl(); controlStatus = "操作积压，已退出捕获；请重新开始"; return }
             controlQueue.append((action, coordinates)); return
         }
+        if action == "start" || action == "pointer_start" {
+            controlStarting = true; controlStatus = "正在请求手机控制…"
+        }
         let previous = controlTask
+        let taskID = UUID(); controlTaskID = taskID
         let epoch = controlEpoch
         let current = generation
         controlTask = Task { [weak self] in
@@ -82,7 +96,7 @@ extension Transport: SessionConnection {}
             guard let self else { return }
             while self.busy || self.sending || !self.pipeline.isIdle {
                 try? await Task.sleep(nanoseconds: 10_000_000)
-                guard current == self.generation else { return }
+                guard current == self.generation, epoch == self.controlEpoch else { return }
             }
             guard current == self.generation, let transport = self.transport else { return }
             if action != "stop" && epoch != self.controlEpoch { return }
@@ -90,8 +104,8 @@ extension Transport: SessionConnection {}
             defer {
                 if current == self.generation {
                     self.busy = false
-                    if epoch == self.controlEpoch {
-                        self.controlTask = nil
+                    if epoch == self.controlEpoch && taskID == self.controlTaskID {
+                        self.controlTask = nil; self.controlStarting = false
                         if self.controlActive && !self.controlQueue.isEmpty {
                             let next = self.controlQueue.removeFirst(); self.sendControl(next.0, coordinates: next.1)
                         } else { self.controlQueue.removeAll() }
@@ -108,6 +122,7 @@ extension Transport: SessionConnection {}
                 // Once a stroke is cancelled, move only the visible pointer until the physical release.
                 // Never synthesize another touch-down for an interrupted gesture.
                 let wireAction = action == "pointer_drag" && self.dragInterrupted ? "pointer_move" : action
+                if coordinates["x"] != nil { self.lastControlCoordinates = coordinates }
                 let result = try await transport.exchange("control.action", coordinates.merging(["action": wireAction]) { _, new in new })
                 guard current == self.generation, epoch == self.controlEpoch else { return }
                 switch result["status"] as? String {
@@ -145,6 +160,73 @@ extension Transport: SessionConnection {}
             } catch { self.disconnect(allowReconnect: true); self.controlStatus = "连接中断，控制已停止；操作不会自动重发" }
         }
     }
+    private static func sameDirection(_ a: [String: String], _ b: [String: String], _ c: [String: String]) -> Bool {
+        guard let ax = Double(a["x"] ?? ""), let ay = Double(a["y"] ?? ""),
+              let bx = Double(b["x"] ?? ""), let by = Double(b["y"] ?? ""),
+              let cx = Double(c["x"] ?? ""), let cy = Double(c["y"] ?? "") else { return false }
+        let dx = bx - ax, dy = by - ay, ex = cx - bx, ey = cy - by
+        return dx * ex + dy * ey >= 0 && abs(dx * ey - dy * ex) < 0.001
+    }
+    @Published private(set) var updating = false
+    @Published private(set) var updateStatus = ""
+    private var updateTask: Task<Void, Never>?
+    func pushUpdate(_ url: URL) {
+        guard connected, !updating else { return }
+        pauseInput(notify: false); stopControl()
+        updating = true; updateStatus = "准备安装包…"
+        let current = generation
+        updateTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+                guard size > 0, size <= 80 * 1024 * 1024 else { throw UpdateFailure.invalidFile }
+                let bytes = try Data(contentsOf: url, options: .mappedIfSafe)
+                guard bytes.count <= 80 * 1024 * 1024 else { throw UpdateFailure.invalidFile }
+                let hash = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+                while self.busy || self.sending || self.controlTask != nil || !self.pipeline.isIdle {
+                    try await Task.sleep(nanoseconds: 10_000_000)
+                    guard current == self.generation else { throw CancellationError() }
+                }
+                guard let transport = self.transport, current == self.generation else { throw CancellationError() }
+                self.busy = true
+                defer { if current == self.generation { self.busy = false } }
+                @MainActor func request(_ type: String, _ payload: [String: String]) async throws -> String {
+                    try Task.checkCancellation()
+                    guard current == self.generation else { throw CancellationError() }
+                    let reply = try await transport.exchange(type, payload)
+                    let status = reply["status"] as? String ?? "invalid_response"
+                    guard status == "ok" || status == "update_ready" else { throw UpdateFailure.rejected(status) }
+                    return status
+                }
+                _ = try await request("update.begin", ["size": String(bytes.count), "sha256": hash])
+                for offset in stride(from: 0, to: bytes.count, by: 8192) {
+                    try await Task.sleep(nanoseconds: 40_000_000)
+                    let end = min(offset + 8192, bytes.count)
+                    _ = try await request("update.chunk", ["offset": String(offset), "data": bytes.subdata(in: offset..<end).base64EncodedString()])
+                    self.updateStatus = "推送更新 \(end * 100 / bytes.count)%"
+                }
+                try await Task.sleep(nanoseconds: 40_000_000)
+                let result = try await request("update.finish", [:])
+                guard result == "update_ready" else { throw UpdateFailure.invalidFile }
+                self.updateStatus = "推送完成，请在手机确认安装"
+            } catch {
+                if current == self.generation {
+                    if case UpdateFailure.rejected(let reason) = error {
+                        switch reason {
+                        case "unknown_type": self.updateStatus = "请先手动安装支持推送的手机版本"
+                        case "update_not_allowed", "update_expired": self.updateStatus = "请在手机允许接收更新后重试"
+                        case "update_rejected": self.updateStatus = "手机校验失败：需同签名、更高版本 APK"
+                        default: self.updateStatus = "推送被拒绝，请在手机检查更新状态"
+                        }
+                    } else { self.updateStatus = "推送中断或文件不可读，请重新连接后重试" }
+                    // Close the upload owner so Android removes incomplete data; never replay chunks.
+                    self.disconnect()
+                }
+            }
+            if current == self.generation { self.updating = false; self.updateTask = nil }
+        }
+    }
+    private enum UpdateFailure: Error { case invalidFile, rejected(String) }
     private var transport: SessionConnection?
     private var generation = UUID()
     private var sending = false
@@ -183,7 +265,7 @@ extension Transport: SessionConnection {}
         snapshotEpoch = UUID(); mirrorPending = false; editorSnapshot = nil; snapshotStatus = message
     }
     func refreshSnapshot() async {
-        guard connected, !busy, !sending, pipeline.isIdle, let transport else { return }
+        guard connected, !updating, controlTask == nil, !busy, !sending, pipeline.isIdle, let transport else { return }
         guard hasVisibleInputWindow else { clearSnapshot("返回窗口后同步"); return }
         busy = true
         let current = generation
@@ -233,7 +315,7 @@ extension Transport: SessionConnection {}
         inputEpoch = UUID(); paused = true; pipeline.discardPending()
         if notify { onPause?() }
     }
-    func resumeInput() { guard connected else { return }; inputProblem = nil; paused = false; status = "输入已就绪 · 中文选词确认后发送"; focusToken += 1 }
+    func resumeInput() { guard connected, !updating else { return }; inputProblem = nil; paused = false; status = "输入已就绪 · 中文选词确认后发送"; focusToken += 1 }
     private func inputFailed(_ response: String) {
         // Missing editors pause typing without releasing the mouse lease.
         pauseInput(notify: !controlActive)
@@ -250,7 +332,7 @@ extension Transport: SessionConnection {}
         }
         inputProblem = status
     }
-    func disconnect(allowReconnect: Bool = false) { controlActive = false; pointerMode = false; dragInterrupted = false; dragNotice = nil; controlQueue.removeAll(); controlEpoch = UUID(); controlTask = nil; wantsReconnect = allowReconnect; blockingReason = nil; onPause?(); clearSnapshot("连接后同步手机输入框"); pipeline.reset(); paused = true; generation = UUID(); transport?.close(); transport = nil; connected = false; busy = false; status = "已断开" }
+    func disconnect(allowReconnect: Bool = false) { updateTask?.cancel(); updateTask = nil; updating = false; controlActive = false; controlStarting = false; pointerMode = false; dragInterrupted = false; dragNotice = nil; controlQueue.removeAll(); controlEpoch = UUID(); controlTask = nil; wantsReconnect = allowReconnect; blockingReason = nil; onPause?(); clearSnapshot("连接后同步手机输入框"); pipeline.reset(); paused = true; generation = UUID(); transport?.close(); transport = nil; connected = false; busy = false; status = "已断开" }
     func pair(_ offer: PairingOffer) {
         address = offer.address; fingerprint = offer.fingerprint; code = offer.code
         connect()
@@ -287,7 +369,7 @@ extension Transport: SessionConnection {}
         }
     }
     func send(_ type: String, value: String) {
-        guard connected, !paused else { return }
+        guard connected, !updating, !paused else { return }
         snapshotEpoch = UUID(); mirrorPending = true
         let value = type == "key.press" && value == "Enter" ? (enterMode == "send" ? "Send" : enterMode == "newline" ? "LineBreak" : value) : value
         guard pipeline.enqueue(InputEvent(type, value)) else {
@@ -296,14 +378,38 @@ extension Transport: SessionConnection {}
         }
     }
     var inputIdle: Bool { pipeline.isIdle && !sending }
+    @Published private(set) var diagnosticFile: URL?
+    @Published private(set) var diagnosticStatus = "连接后自动同步手机日志"
+    func saveDiagnostics(_ text: String) {
+        guard text.utf8.count <= 32_768, !fingerprint.isEmpty else { return }
+        do {
+            let directory = URL(fileURLWithPath: "/tmp/wifi-remote-input", isDirectory: true)
+            let fm = FileManager.default
+            if !fm.fileExists(atPath: directory.path) {
+                try fm.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+            }
+            let attributes = try fm.attributesOfItem(atPath: directory.path)
+            guard attributes[.type] as? FileAttributeType == .typeDirectory,
+                  (attributes[.ownerAccountID] as? NSNumber)?.uint32Value == getuid(),
+                  (attributes[.posixPermissions] as? NSNumber)?.intValue == 0o700 else { throw CocoaError(.fileWriteNoPermission) }
+            let key = SHA256.hash(data: Data(fingerprint.utf8)).map { String(format: "%02x", $0) }.joined()
+            let file = directory.appendingPathComponent("phone-" + key + ".log")
+            // Replace one bounded snapshot; never append duplicate history or use a peer-supplied path.
+            try Data(text.utf8).write(to: file, options: .atomic)
+            try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+            diagnosticFile = file
+            diagnosticStatus = text.isEmpty ? "手机日志同步已关闭" : "手机日志已同步至 /tmp"
+        } catch { diagnosticStatus = "日志保存失败，请检查 /tmp 目录权限" }
+    }
     func checkConnection() async {
-        guard connected, !busy, !sending, pipeline.isIdle, let transport else { return }
+        guard connected, !updating, controlTask == nil, !busy, !sending, pipeline.isIdle, let transport else { return }
         busy = true
         let current = generation
         do {
             let response = try await transport.exchange("session.ping", [:])
             guard current == generation else { return }
             if response["status"] as? String != "pong" { disconnect(); status = "设备认证已失效，请重新连接" }
+            else if let logs = response["diagnostics"] as? String { saveDiagnostics(logs) }
         } catch {
             guard current == generation else { return }
             disconnect(allowReconnect: true); status = "连接已中断，正在寻找已配对手机…"

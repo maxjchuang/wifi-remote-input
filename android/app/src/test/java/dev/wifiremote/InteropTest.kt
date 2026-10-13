@@ -51,10 +51,12 @@ class InteropTest {
             val ready = CountDownLatch(1)
             val inputs = Collections.synchronizedList(mutableListOf<Pair<String, String>>())
             val controls = Collections.synchronizedList(mutableListOf<JSONObject>())
+            val updates = Collections.synchronizedList(mutableListOf<Pair<String, JSONObject>>())
             var editorText = "手机已有文字"
             server = InputServer(InetSocketAddress("127.0.0.1", 0), identity.tls, pairing, { type, value, authorized ->
                 check(authorized())
-                if (type == "control.action") { controls.add(JSONObject(value)); "ok" } else if (type == "editor.edit") {
+                if (type.startsWith("update.")) { updates.add(type to JSONObject(value)); if (type == "update.finish") "update_ready" else "ok" }
+                else if (type == "control.action") { controls.add(JSONObject(value)); "ok" } else if (type == "editor.edit") {
                     val edit = JSONObject(value)
                     if (edit.getString("editorId") != "1" || edit.getString("expectedHash") != Secrets.hash(editorText + "\u0000" + editorText.length + "," + editorText.length)) "editor_conflict"
                     else { editorText = edit.getString("text"); inputs.add(type to value); "ok" }
@@ -63,7 +65,7 @@ class InteropTest {
                 check(authorized())
                 JSONObject().put("status", "snapshot").put("editorId", "1").put("text", editorText)
                     .put("selectionStart", editorText.length).put("selectionEnd", editorText.length)
-            }, deviceName = { "测试手机 A" })
+            }, deviceName = { "测试手机 A" }, diagnostics = { "CONTROL_START\nGESTURE_CANCELLED" })
             server.start()
             assertTrue(ready.await(10, TimeUnit.SECONDS))
             val qr = PairingQr.matrix("127.0.0.1:${server.port}", identity.fingerprint, code)
@@ -94,6 +96,9 @@ class InteropTest {
             assertEquals(listOf("Enter", "Backspace", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"), inputs.drop(1).take(6).map { it.second })
             assertEquals("同步中文 👋", inputs.last().second)
             assertEquals(listOf("仅 B", "同步中文 👋"), secondInputs.map { it.second })
+            assertEquals(listOf("update.begin", "update.chunk", "update.finish"), updates.map { it.first })
+            assertArrayEquals(byteArrayOf(0, 1, -1), java.util.Base64.getDecoder().decode(updates[1].second.getString("data")))
+            assertEquals(controls.first().getString("owner"), updates.first().second.getString("owner"))
             assertEquals("测试 Mac", pairing.peerName()); assertEquals("测试 Mac", secondPairing.peerName())
         } finally { second?.shutdown(); server?.shutdown(); directory.deleteRecursively() }
     }

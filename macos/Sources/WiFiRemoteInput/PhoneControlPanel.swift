@@ -19,10 +19,10 @@ struct PhoneControlPanel: View {
                 RoundedRectangle(cornerRadius: 14).fill(.primary.opacity(0.035))
                 VStack(spacing: 12) {
                     Image(systemName: "cursorarrow.motionlines").font(.system(size: compact ? 20 : 36, weight: .light))
-                    Text(client.active.controlActive ? "鼠标捕获中" : "点击捕获鼠标").font(.system(size: compact ? 13 : 18, weight: .medium))
+                    Text(client.active.controlStarting ? "正在连接控制…" : (client.active.controlActive ? "鼠标捕获中" : "点击捕获鼠标")).font(.system(size: compact ? 13 : 18, weight: .medium))
                     if !compact { Text("移动鼠标 → 移动手机指针\n左键  点击／按住拖动     右键  返回\n点中手机输入框后直接打字\nEsc  退出捕获 · 请看手机屏幕").font(.system(size: 12)).lineSpacing(10).foregroundStyle(.secondary).multilineTextAlignment(.center) }
                 }.opacity(client.active.controlActive && client.active.editorSnapshot != nil ? 0 : 1).allowsHitTesting(false)
-                ControlKeyArea(client: client)
+                ControlKeyArea(client: client).frame(maxWidth: .infinity, maxHeight: .infinity)
             }.frame(maxHeight: .infinity).frame(minHeight: compact ? 65 : 180)
             HStack(spacing: 16) {
                 action("返回", "arrow.uturn.backward", "back")
@@ -43,12 +43,50 @@ struct PhoneControlPanel: View {
 
 private struct ControlKeyArea: NSViewRepresentable {
     let client: Client
-    func makeNSView(context: Context) -> ControlKeysView { let view = ControlKeysView(); view.client = client; view.configureEditor(); return view }
-    func updateNSView(_ view: ControlKeysView, context: Context) { view.client = client; view.synchronizeEditor() }
-    static func dismantleNSView(_ view: ControlKeysView, coordinator: ()) { view.stop() }
+    func makeNSView(context: Context) -> ControlSurfaceView {
+        let surface = ControlSurfaceView()
+        surface.editor.client = client; surface.editor.configureEditor()
+        return surface
+    }
+    func updateNSView(_ surface: ControlSurfaceView, context: Context) {
+        surface.editor.client = client; surface.editor.synchronizeEditor()
+    }
+    static func dismantleNSView(_ surface: ControlSurfaceView, coordinator: ()) { surface.editor.stop() }
+}
+
+// NSTextView's intrinsic text height must not determine the control surface hit area.
+final class ControlSurfaceView: NSView {
+    let editor = ControlKeysView()
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        addSubview(editor)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func layout() {
+        super.layout()
+        editor.frame = bounds
+    }
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard !isHidden, frame.contains(point) else { return nil }
+        return editor
+    }
 }
 
 final class ControlKeysView: CommitTextView {
+    // Keyboard focus also belongs to the control surface; it does not imply an editable phone field.
+    override var shouldDrawInsertionPoint: Bool { permitted() && super.shouldDrawInsertionPoint }
+    override func drawInsertionPoint(in rect: NSRect, color: NSColor, turnedOn flag: Bool) {
+        super.drawInsertionPoint(in: rect, color: color, turnedOn: flag && permitted())
+    }
+    override func resetCursorRects() { addCursorRect(bounds, cursor: .arrow) }
+    // NSTextView also sets its I-beam from tracking events, independently of cursor rectangles.
+    override func cursorUpdate(with event: NSEvent) { NSCursor.arrow.set() }
+    override func mouseMoved(with event: NSEvent) { if !capturing { NSCursor.arrow.set() } }
+    override func mouseEntered(with event: NSEvent) { if !capturing { NSCursor.arrow.set() } }
+    private func refreshEditorAppearance() {
+        insertionPointColor = permitted() ? .labelColor : .clear
+        needsDisplay = true
+    }
     private var snapshotTask: Task<Void, Never>?
     private var synchronizedEditorID: String?
     func configureEditor() {
@@ -73,7 +111,7 @@ final class ControlKeysView: CommitTextView {
         client?.active.registerInputView(self)
     }
     func synchronizeEditor() {
-        textColor = .labelColor; insertionPointColor = .labelColor
+        textColor = .labelColor; refreshEditorAppearance()
         guard let device = capturedDevice else { synchronize(nil, pending: false, blocked: true); return }
         if synchronizedEditorID != device.editorSnapshot?.editorId { discardComposition(); synchronizedEditorID = device.editorSnapshot?.editorId }
         synchronize(device.editorSnapshot, pending: device.mirrorPending, blocked: !capturing || device.paused)
@@ -95,6 +133,30 @@ final class ControlKeysView: CommitTextView {
     private var pointerY = 5000.0
     private var dirtyPointer = false
     private var leftPressed = false
+    private var touchStarted = false
+    private var pressCoordinates: [String: String] = [:]
+    private var pressTimer: Timer?
+    private func beginTouch() {
+        guard capturing, leftPressed, !touchStarted else { return }
+        touchStarted = true; pressTimer?.invalidate(); pressTimer = nil
+        capturedDevice?.sendControl("pointer_down", coordinates: pressCoordinates)
+    }
+    func pressPointer() {
+        guard capturing else { return }
+        dirtyPointer = false; leftPressed = true; invalidateEditor()
+        touchStarted = false; pressCoordinates = coordinates()
+        pressTimer?.invalidate()
+        pressTimer = Timer.scheduledTimer(withTimeInterval: 0.18, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.beginTouch() }
+        }
+    }
+    func releasePointer() {
+        guard capturing, leftPressed else { return }
+        leftPressed = false; dirtyPointer = false
+        pressTimer?.invalidate(); pressTimer = nil
+        capturedDevice?.sendControl(touchStarted ? "pointer_up" : "pointer_tap", coordinates: touchStarted ? coordinates() : pressCoordinates)
+        touchStarted = false
+    }
     private var movementTimer: Timer?
     private func coordinates() -> [String: String] { ["x": String(Int(pointerX.rounded())), "y": String(Int(pointerY.rounded()))] }
     private func beginCapture() {
@@ -121,16 +183,15 @@ final class ControlKeysView: CommitTextView {
                 self.pointerX = min(10000, max(0, self.pointerX + event.deltaX * 14))
                 self.pointerY = min(10000, max(0, self.pointerY + event.deltaY * 14))
                 self.dirtyPointer = true
-            case .leftMouseDown:
-                self.dirtyPointer = false
-                self.leftPressed = true
-                self.invalidateEditor()
-                self.capturedDevice?.sendControl("pointer_down", coordinates: self.coordinates())
-            case .leftMouseUp:
-                if self.leftPressed {
-                    self.leftPressed = false; self.dirtyPointer = false
-                    self.capturedDevice?.sendControl("pointer_up", coordinates: self.coordinates())
+                if self.leftPressed && !self.touchStarted {
+                    let dx = self.pointerX - (Double(self.pressCoordinates["x"] ?? "") ?? self.pointerX)
+                    let dy = self.pointerY - (Double(self.pressCoordinates["y"] ?? "") ?? self.pointerY)
+                    if hypot(dx, dy) >= 60 { self.beginTouch() }
                 }
+            case .leftMouseDown:
+                self.pressPointer()
+            case .leftMouseUp:
+                self.releasePointer()
             case .rightMouseDown:
                 if !self.leftPressed { self.invalidateEditor(); self.capturedDevice?.sendControl("back") }
             default: break
@@ -138,11 +199,12 @@ final class ControlKeysView: CommitTextView {
             return nil
         }
         movementTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in MainActor.assumeIsolated {
-            guard let self, self.capturing, self.dirtyPointer else { return }
+            guard let self, self.capturing, self.dirtyPointer, !self.leftPressed || self.touchStarted else { return }
             self.dirtyPointer = false; self.capturedDevice?.sendControl(self.leftPressed ? "pointer_drag" : "pointer_move", coordinates: self.coordinates())
         } }
     }
     private func releaseCapture() {
+        pressTimer?.invalidate(); pressTimer = nil; touchStarted = false
         snapshotTask?.cancel(); snapshotTask = nil
         discardComposition(); capturedDevice?.pauseInput(notify: false)
         captureRequested = false
@@ -151,12 +213,16 @@ final class ControlKeysView: CommitTextView {
         movementTimer?.invalidate(); movementTimer = nil
         if capturing { mouseCapture.release(); window?.acceptsMouseMovedEvents = previousMouseEvents }
         capturing = false; dirtyPointer = false; leftPressed = false
+        synchronizeEditor(); refreshEditorAppearance()
     }
     override var acceptsFirstResponder: Bool { true }
     override func mouseDown(with event: NSEvent) { requestCapture() }
     func requestCapture() {
-        guard !capturing, let client, client.active.connected else { return }
-        window?.makeFirstResponder(self)
+        guard !capturing, let client, client.active.connected, !client.active.controlStarting else { return }
+        guard let window else { return }
+        // acceptsFirstMouse delivers the activation click even when the window is not key yet.
+        window.makeKey()
+        guard window.makeFirstResponder(self), window.isKeyWindow else { return }
         captureRequested = true; capturedDevice = client.active
         client.startControl(mouse: true)
         captureWatch = client.active.pointerControlStates.receive(on: RunLoop.main).sink { [weak self] active in
@@ -179,7 +245,11 @@ final class ControlKeysView: CommitTextView {
         } }
         setAccessibilityLabel("点击捕获鼠标，左键点击手机，右键返回，Esc 退出捕获")
     }
-    func stop() { releaseCapture(); capturedDevice?.stopControl(); capturedDevice = nil; client?.active.stopControl() }
+    func stop() {
+        let device = capturedDevice
+        releaseCapture(); capturedDevice = nil
+        device?.stopControl()
+    }
     override func keyDown(with event: NSEvent) {
         guard window?.isKeyWindow == true, window?.firstResponder === self else { return }
         if hasMarkedText() { super.keyDown(with: event); return }
@@ -201,7 +271,7 @@ final class ControlKeysView: CommitTextView {
         }
         if let action { client?.active.sendControl(action) }
     }
-    deinit { snapshotTask?.cancel(); mouseCapture.release(); if let mouseMonitor { NSEvent.removeMonitor(mouseMonitor) }; movementTimer?.invalidate(); timer?.invalidate(); if let observer { NotificationCenter.default.removeObserver(observer) } }
+    deinit { pressTimer?.invalidate(); snapshotTask?.cancel(); mouseCapture.release(); if let mouseMonitor { NSEvent.removeMonitor(mouseMonitor) }; movementTimer?.invalidate(); timer?.invalidate(); if let observer { NotificationCenter.default.removeObserver(observer) } }
 }
 
 

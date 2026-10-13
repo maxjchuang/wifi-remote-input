@@ -14,7 +14,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import javax.net.ssl.SSLContext
 
-class InputServer(address: InetSocketAddress, tls: SSLContext, private val pairing: Pairing, private val input: (String, String, () -> Boolean) -> String, private val status: (String) -> Unit, private val snapshot: (() -> Boolean) -> org.json.JSONObject = { org.json.JSONObject().put("status", "snapshot_unavailable") }, private val deviceName: () -> String = { "Android 手机" }, private val peersChanged: (Set<String>) -> Unit = {}, private val controlClosed: (String) -> Unit = {}) : WebSocketServer(address, 2, listOf(Draft_6455(listOf(DefaultExtension()), listOf(WireProtocol("")), 16_384))) {
+class InputServer(address: InetSocketAddress, tls: SSLContext, private val pairing: Pairing, private val input: (String, String, () -> Boolean) -> String, private val status: (String) -> Unit, private val snapshot: (() -> Boolean) -> org.json.JSONObject = { org.json.JSONObject().put("status", "snapshot_unavailable") }, private val deviceName: () -> String = { "Android 手机" }, private val peersChanged: (Set<String>) -> Unit = {}, private val controlClosed: (String) -> Unit = {}, private val diagnostic: (String) -> Unit = {}, private val diagnostics: () -> String = { "" }) : WebSocketServer(address, 2, listOf(Draft_6455(listOf(DefaultExtension()), listOf(WireProtocol("")), 16_384))) {
     private val sessions = ConcurrentHashMap<WebSocket, Protocol>()
     private val owners = ConcurrentHashMap<WebSocket, String>()
     private val deadlines = Executors.newSingleThreadScheduledExecutor()
@@ -29,20 +29,21 @@ class InputServer(address: InetSocketAddress, tls: SSLContext, private val pairi
         val owner = java.util.UUID.randomUUID().toString()
         owners[conn] = owner
         lateinit var protocol: Protocol
-        protocol = Protocol(pairing, snapshot = { snapshot { protocol.credential?.let(pairing::authenticate) == true } }, deviceName = deviceName) { type, value -> input(type, if (type == "control.action") (if (value.startsWith("{")) org.json.JSONObject(value) else org.json.JSONObject().put("action", value)).put("owner", owner).toString() else value) { sessions[conn] === protocol && protocol.credential?.let(pairing::authenticate) == true } }
+        protocol = Protocol(pairing, snapshot = { snapshot { protocol.credential?.let(pairing::authenticate) == true } }, deviceName = deviceName, diagnostics = diagnostics) { type, value -> input(type, if (type == "control.action" || type.startsWith("update.")) (if (value.startsWith("{")) org.json.JSONObject(value) else org.json.JSONObject().put("action", value)).put("owner", owner).toString() else value) { sessions[conn] === protocol && protocol.credential?.let(pairing::authenticate) == true } }
         sessions[conn] = protocol
         deadlines.schedule({ if (protocol.credential == null) conn.close(1008, "authentication_required") }, 10, TimeUnit.SECONDS)
     }
     override fun onMessage(conn: WebSocket, message: String) {
         val protocol = sessions[conn] ?: return
         val response = protocol.handle(message)
+        diagnostic(response.optString("status"))
         conn.send(response.toString())
         publishPeers()
         if (response.optString("status") in setOf("authentication_failed", "unauthorized", "rate_limited", "too_large")) conn.close(1008, "rejected")
     }
     override fun onMessage(conn: WebSocket, message: java.nio.ByteBuffer) { conn.close(1003, "text_only") }
-    override fun onClose(conn: WebSocket, code: Int, reason: String, remote: Boolean) { sessions.remove(conn); owners.remove(conn)?.let(controlClosed); publishPeers() }
-    override fun onError(conn: WebSocket?, ex: Exception) { if (conn == null) status("服务启动或网络失败，请停止后重试") }
+    override fun onClose(conn: WebSocket, code: Int, reason: String, remote: Boolean) { diagnostic("connection_closed"); sessions.remove(conn); owners.remove(conn)?.let(controlClosed); publishPeers() }
+    override fun onError(conn: WebSocket?, ex: Exception) { diagnostic("network_error"); if (conn == null) status("服务启动或网络失败，请停止后重试") }
     override fun onStart() { status("接收中 · TLS · 端口 8765") }
     private fun publishPeers() { peersChanged(sessions.values.mapNotNull { p -> p.credential?.takeIf(pairing::authenticate)?.let { pairing.peerName() } }.toSet()) }
     fun shutdown() { deadlines.shutdownNow(); stop(1000) }

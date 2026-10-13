@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import Foundation
 import Darwin
+import CryptoKit
 import ImageIO
 import RemoteCore
 
@@ -38,6 +39,10 @@ import RemoteCore
         let reconnect = try Transport(address: address, fingerprint: pin, allowLoopback: true)
         let auth = try await reconnect.exchange("auth", ["token": token])
         precondition(auth["status"] as? String == "authenticated")
+        let heartbeat = try await reconnect.exchange("session.ping", [:])
+        precondition(heartbeat["diagnostics"] as? String == "CONTROL_START\nGESTURE_CANCELLED")
+        print("PASS authenticated diagnostics over TLS")
+        try await Task.sleep(nanoseconds: 60_000_000)
         let initialSnapshot = try EditorSnapshot(response: await reconnect.exchange("editor.snapshot", [:]))
         precondition(initialSnapshot.text == "手机已有文字")
         let text = try await reconnect.exchange("text.commit", ["text": "你好，小米 13 👋"])
@@ -57,6 +62,16 @@ import RemoteCore
         let editedSnapshot = try EditorSnapshot(response: await reconnect.exchange("editor.snapshot", [:]))
         precondition(editedSnapshot.text == "同框编辑👋")
         print("PASS mirror edit payload, cross-language content hash and stale edit rejection over TLS")
+        let updateBytes = Data([0, 1, 255])
+        let updateHash = SHA256.hash(data: updateBytes).map { String(format: "%02x", $0) }.joined()
+        for (type, payload) in [("update.begin", ["size": "3", "sha256": updateHash]),
+                                ("update.chunk", ["offset": "0", "data": updateBytes.base64EncodedString()]),
+                                ("update.finish", [:])] {
+            try await Task.sleep(nanoseconds: 60_000_000)
+            let response = try await reconnect.exchange(type, payload)
+            precondition(response["status"] as? String == (type == "update.finish" ? "update_ready" : "ok"))
+        }
+        print("PASS authenticated update chunks over TLS (installation is not exercised)")
         let second = try Transport(address: fixture["secondAddress"]!, fingerprint: fixture["secondPin"]!, allowLoopback: true)
         let secondPair = try await second.exchange("pair", ["code": fixture["secondCode"]!, "deviceName": "测试 Mac"])
         precondition(secondPair["status"] as? String == "paired" && secondPair["deviceName"] as? String == "测试手机 B")

@@ -17,8 +17,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <key>CFBundleExecutable</key><string>WiFiRemoteInput</string>
 <key>CFBundleIconFile</key><string>AppIcon</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>0.9.6</string>
-<key>CFBundleVersion</key><string>906</string>
+<key>CFBundleShortVersionString</key><string>0.10.2</string>
+<key>CFBundleVersion</key><string>1002</string>
 <key>LSMinimumSystemVersion</key><string>13.0</string>
 <key>NSCameraUsageDescription</key><string>扫描 Android 手机上的配对二维码，自动建立安全连接。画面仅在本机识别。</string>
 <key>NSBonjourServices</key><array><string>_wri-input._tcp</string></array>

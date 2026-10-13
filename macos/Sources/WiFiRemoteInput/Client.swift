@@ -144,7 +144,13 @@ import RemoteCore
     func registerInputView(_ view: NSView) { active.registerInputView(view) }
     func clearSnapshot(_ message: String = "等待同步手机输入框") { active.clearSnapshot(message) }
     func refreshSnapshot() async { await active.refreshSnapshot() }
-    func pauseInput() { for device in devices + [active] { device.pauseInput(notify: false); device.stopControl() }; groupStatus = nil }
+    func pauseInput() {
+        var visited = Set<String>()
+        for device in devices + [active] where visited.insert(device.id).inserted {
+            device.pauseInput(notify: false); device.stopControl()
+        }
+        groupStatus = nil
+    }
     func resumeInput() {
         let available = Set(targets.filter { $0.connected }.map(\.id))
         guard plan.ready(available: available) else {

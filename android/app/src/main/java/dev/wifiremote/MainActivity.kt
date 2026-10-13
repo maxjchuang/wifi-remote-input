@@ -119,6 +119,7 @@ class MainActivity : Activity() {
             AlertDialog.Builder(this).setTitle("忘记这台电脑？").setMessage("$peer 将无法继续输入，需要重新扫码配对。")
                 .setNegativeButton("取消", null).setPositiveButton("忘记") { _, _ -> pairing.revoke(); clearQr(); notice = "已忘记电脑"; render(true) }.show()
         })
+        content.addView(ui.button("诊断日志与更新") { startActivity(Intent(this, MaintenanceActivity::class.java)) })
         space(20)
         content.addView(centered("本地加密连接 · 密码框保护", 12f, true))
     }

@@ -31,6 +31,8 @@ class ReceiverService : Service() {
     override fun onBind(intent: Intent?) = null
     override fun onCreate() {
         super.onCreate()
+        DiagnosticLog.record(this, DiagnosticLog.Event.RECEIVER_START)
+        UpdateInbox.cancel(this)
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(NotificationChannel("receiver", "局域网输入接收", NotificationManager.IMPORTANCE_LOW))
         val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
@@ -40,7 +42,12 @@ class ReceiverService : Service() {
             try {
                 val identity = Identity(noBackupFilesDir)
                 ReceiverState.identity = identity
-                val endpoint = InputServer(InetSocketAddress(8765), identity.tls, ReceiverState.pairing(this), { type, value, authorized ->
+                val endpoint = InputServer(InetSocketAddress(8765), identity.tls, ReceiverState.pairing(this), input@{ type, value, authorized ->
+                    if (type.startsWith("update.")) {
+                        val message = org.json.JSONObject(value)
+                        val owner = message.getString("owner"); message.remove("owner")
+                        return@input UpdateInbox.handle(this, owner, type, message, authorized)
+                    }
                     val done = CountDownLatch(1)
                     var result = "no_editor"
                     val cancelled = java.util.concurrent.atomic.AtomicBoolean(false)
@@ -75,14 +82,16 @@ class ReceiverService : Service() {
                         cancelled.set(true); org.json.JSONObject().put("status", "editor_timeout")
                     } else if (stopped || !authorized()) org.json.JSONObject().put("status", "unauthorized")
                     else result
-                }, deviceName = { ReceiverState.deviceName(this) }, peersChanged = { ReceiverState.connectedPeers = it }, controlClosed = { owner -> main.post { PhoneControlService.active?.stop(owner) } })
+                }, deviceName = { ReceiverState.deviceName(this) }, peersChanged = { ReceiverState.connectedPeers = it }, controlClosed = { owner -> UpdateInbox.cancel(this, owner); main.post { PhoneControlService.active?.stop(owner) } }, diagnostic = { DiagnosticLog.status(this, it) }, diagnostics = { if (DiagnosticLog.enabled(this)) DiagnosticLog.read(this) else "" })
                 synchronized(this) { if (stopped) endpoint.shutdown() else { server = endpoint; endpoint.start() } }
-            } catch (_: Exception) { ReceiverState.status = "无法启动接收服务"; stopSelf() }
+            } catch (_: Exception) { DiagnosticLog.record(this, DiagnosticLog.Event.RECEIVER_ERROR); ReceiverState.status = "无法启动接收服务"; stopSelf() }
         }.start()
     }
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int) = START_NOT_STICKY
     override fun onDestroy() {
         stopped = true
+        UpdateInbox.cancel(this)
+        DiagnosticLog.record(this, DiagnosticLog.Event.RECEIVER_STOP)
         PhoneControlService.active?.stop()
         advertisement?.close(); advertisement = null
         ReceiverState.pairing(this).cancel()

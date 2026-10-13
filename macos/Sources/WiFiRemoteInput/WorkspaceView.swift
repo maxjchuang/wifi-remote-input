@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import SwiftUI
 import RemoteCore
+import UniformTypeIdentifiers
 
 struct WorkspaceView: View {
     @ObservedObject var client: Client
@@ -80,6 +81,30 @@ struct WorkspaceView: View {
                         Button("连接勾选的手机") { client.connectTargets() }.buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(accent)
                     }
                 }.frame(maxHeight: .infinity)
+                VStack(alignment: .leading, spacing: 5) {
+                    Button(client.active.updating ? "正在推送更新…" : "推送手机更新…") {
+                        client.pauseInput()
+                        let phone = client.active
+                        let panel = NSOpenPanel(); panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
+                        panel.allowedContentTypes = [UTType(filenameExtension: "apk") ?? .data]
+                        panel.message = "选择同签名、更高版本的 Android APK；请先在手机允许接收更新。"
+                        panel.begin { result in
+                            if result == .OK, let url = panel.url { phone.pushUpdate(url) }
+                        }
+                    }.buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(accent)
+                        .disabled(!client.active.connected || client.active.updating)
+                    if !client.active.updateStatus.isEmpty {
+                        Text(client.active.updateStatus).font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                VStack(alignment: .leading, spacing: 5) {
+                    Button("查看手机日志") {
+                        if let file = client.active.diagnosticFile { NSWorkspace.shared.open(file) }
+                    }.buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(accent)
+                        .disabled(client.active.diagnosticFile == nil)
+                    Text(client.active.diagnosticStatus).font(.system(size: 10)).foregroundStyle(.secondary)
+                        .help(client.active.diagnosticFile?.path ?? "自动同步到 /tmp/wifi-remote-input/")
+                }
                 ShortcutControl(shortcut: presentation.shortcut)
                 Rectangle().fill(lineColor).frame(height: 1)
                 Label("本地加密连接", systemImage: "lock.shield").font(.system(size: 10)).foregroundStyle(.secondary).padding(.horizontal, 10)

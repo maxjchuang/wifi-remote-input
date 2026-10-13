@@ -14,6 +14,17 @@ class ProtocolTest {
     private fun message(type: String, key: String, value: String) = JSONObject().put("version", 1).put("type", type).put("payload", JSONObject().put(key, value)).toString()
     private fun send(type: String, key: String, value: String) = protocol.handle(message(type, key, value))
     private fun pair(): String = send("pair", "code", pairing.begin()).getString("token")
+    @Test fun diagnosticsOnlyReachAuthenticatedPeerAndStopAfterRevocation() {
+        var reads = 0
+        val p = Protocol(pairing, diagnostics = { reads++; "safe diagnostic events" }) { _, _ -> "ok" }
+        fun ping(extra: Boolean = false) = p.handle(JSONObject().put("version", 1).put("type", "session.ping").put("payload", JSONObject().apply { if (extra) put("extra", "value") }).toString())
+        assertEquals("unauthorized", ping().getString("status")); assertEquals(0, reads)
+        p.handle(message("pair", "code", pairing.begin()))
+        assertEquals("invalid_message", ping(true).getString("status")); assertEquals(0, reads)
+        assertEquals("safe diagnostic events", ping().getString("diagnostics")); assertEquals(1, reads)
+        pairing.revoke()
+        assertFalse(ping().has("diagnostics")); assertEquals(1, reads)
+    }
     @Test fun pointerCoordinatesAreStrictBoundedAndAuthenticated() {
         fun call(payload: JSONObject) = protocol.handle(JSONObject().put("version", 1).put("type", "control.action").put("payload", payload).toString()).getString("status")
         fun payload(x: Any, y: Any = "5000") = JSONObject().put("action", "pointer_tap").put("x", x).put("y", y)

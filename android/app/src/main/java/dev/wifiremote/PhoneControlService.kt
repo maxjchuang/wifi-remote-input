@@ -43,7 +43,17 @@ open class PhoneControlService : AccessibilityService() {
     private var gesturePending = false
     private var gestureEpoch = 0
     private val drag by lazy { PointerDrag(
-        { gesture, callback -> dispatchGesture(gesture, callback, handler) },
+        { gesture, callback ->
+            val accepted = dispatchGesture(gesture, object : GestureResultCallback() {
+                override fun onCompleted(description: GestureDescription?) { callback.onCompleted(description) }
+                override fun onCancelled(description: GestureDescription?) {
+                    DiagnosticLog.record(this@PhoneControlService, DiagnosticLog.Event.GESTURE_CANCELLED)
+                    callback.onCancelled(description)
+                }
+            }, handler)
+            if (!accepted) DiagnosticLog.record(this, DiagnosticLog.Event.GESTURE_REJECTED)
+            accepted
+        },
         { owner != null && pointerMode && authorization() && !locked() && SystemClock.elapsedRealtime() <= expires }
     ) }
     @Suppress("DEPRECATION")
@@ -90,6 +100,7 @@ open class PhoneControlService : AccessibilityService() {
         if (session != null && owner != session) return
         drag.up()
         cancelPointerAnimation()
+        DiagnosticLog.record(this, DiagnosticLog.Event.CONTROL_STOP)
         pointerMode = false; gestureEpoch++; gesturePending = false
         owner = null; selected = null; authorization = { false }
         overlay?.let { try { getSystemService(WindowManager::class.java).removeView(it) } catch (_: IllegalArgumentException) { /* Already detached by the system. */ } }; overlay = null
@@ -103,6 +114,7 @@ open class PhoneControlService : AccessibilityService() {
             if (owner != null && owner != session || drag.holding) return "control_busy"
             owner = session; authorization = authorized; expires = SystemClock.elapsedRealtime() + 6000
             cancelPointerAnimation(); pointerMotion.snap(5000, 5000)
+            DiagnosticLog.record(this, DiagnosticLog.Event.CONTROL_START)
             pointerMode = action == "pointer_start"; pointerX = 5000; pointerY = 5000
             if (pointerMode) clearSelection() else select("next")
             showOutline(); return "ok"
@@ -195,6 +207,17 @@ open class PhoneControlService : AccessibilityService() {
         if (overlay == null) {
             val view = object : View(this) {
                 val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(46, 199, 168); style = Paint.Style.STROKE; strokeWidth = 3 * resources.displayMetrics.density }
+                // Tip is (0, 0): the visible arrow points at the exact touch coordinate.
+                val cursorPath = android.graphics.Path().apply {
+                    moveTo(0f, 0f); lineTo(0f, 24f); lineTo(6f, 18f)
+                    lineTo(12f, 30f); lineTo(17f, 27.5f); lineTo(11f, 16f)
+                    lineTo(22f, 16f); close()
+                }
+                val cursorFill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.BLACK; style = Paint.Style.FILL }
+                val cursorBorder = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = Color.WHITE; style = Paint.Style.STROKE; strokeWidth = 1.5f
+                    strokeJoin = Paint.Join.ROUND; strokeCap = Paint.Cap.ROUND
+                }
                 val location = IntArray(2)
                 val outline = RectF()
                 var extent = screenSize()
@@ -204,8 +227,13 @@ open class PhoneControlService : AccessibilityService() {
                     if (pointerMode) {
                         val x = pointerMotion.x / 10000f * (extent.x - 1).coerceAtLeast(0) - location[0]
                         val y = pointerMotion.y / 10000f * (extent.y - 1).coerceAtLeast(0) - location[1]
-                        canvas.drawCircle(x, y, 9 * resources.displayMetrics.density, paint)
-                        canvas.drawLine(x - 5, y, x + 5, y, paint); canvas.drawLine(x, y - 5, x, y + 5, paint)
+                        canvas.save()
+                        canvas.translate(x, y)
+                        val density = resources.displayMetrics.density
+                        canvas.scale(density, density)
+                        canvas.drawPath(cursorPath, cursorFill)
+                        canvas.drawPath(cursorPath, cursorBorder)
+                        canvas.restore()
                     }
                     if (!bounds.isEmpty) { outline.set(bounds); canvas.save(); canvas.translate(-location[0].toFloat(), -location[1].toFloat()); canvas.drawRoundRect(outline, 8f, 8f, paint); canvas.restore() } }
             }

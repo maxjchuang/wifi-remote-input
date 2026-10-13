@@ -45,7 +45,7 @@ object EditorPolicy {
     }
 }
 
-class Protocol(private val pairing: Pairing, private val snapshot: () -> JSONObject = { JSONObject().put("status", "snapshot_unavailable") }, private val deviceName: () -> String = { "Android 手机" }, private val input: (String, String) -> String) {
+class Protocol(private val pairing: Pairing, private val snapshot: () -> JSONObject = { JSONObject().put("status", "snapshot_unavailable") }, private val deviceName: () -> String = { "Android 手机" }, private val diagnostics: () -> String = { "" }, private val input: (String, String) -> String) {
     @Volatile var credential: String? = null
         private set
     private var count = 0
@@ -86,6 +86,11 @@ class Protocol(private val pairing: Pairing, private val snapshot: () -> JSONObj
                 else -> {
                     if (credential?.let(pairing::authenticate) != true) return response("unauthorized")
                     when (type) {
+                        "update.begin", "update.chunk", "update.finish" -> {
+                            val fields = when (type) { "update.begin" -> setOf("size", "sha256"); "update.chunk" -> setOf("offset", "data"); else -> emptySet() }
+                            if (payload.keys().asSequence().toSet() != fields || fields.any { payload.get(it) !is String }) response("invalid_message")
+                            else response(input(type, payload.toString()))
+                        }
                         "control.action" -> {
                             val action = string("action")
                             if (action in setOf("pointer_move", "pointer_tap", "pointer_down", "pointer_drag", "pointer_up")) {
@@ -116,7 +121,7 @@ class Protocol(private val pairing: Pairing, private val snapshot: () -> JSONObj
                             if (payload.length() != 0) response("invalid_message")
                             else snapshot().put("version", 1).put("type", "result")
                         }
-                        "session.ping" -> response("pong")
+                        "session.ping" -> if (payload.length() != 0) response("invalid_message") else response("pong").put("diagnostics", diagnostics())
                         else -> response("unknown_type")
                     }
                 }

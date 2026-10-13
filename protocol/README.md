@@ -1,6 +1,6 @@
 # Protocol v1 — Text input and phone control
 
-Current implementation: macOS / Android 0.9.6. Protocol version remains 1; optional control actions extend the existing authenticated connection.
+Current implementation: macOS / Android 0.9.7. Protocol version remains 1; optional control actions extend the existing authenticated connection.
 
 [Architecture](../docs/architecture.md) · [Development and acceptance](../docs/development.md)
 
@@ -119,7 +119,7 @@ DNS-SD 服务类型 `_wri-input._tcp.`，端口指向现有 TLS WebSocket 接收
 
 `pointer_down`、`pointer_drag`、`pointer_up` 使用与 pointer_move 相同的 x/y 严格归一化坐标字段。down 建立 willContinue=true 的触摸，drag 通过 continueStroke 延续同一根手指，up 用 willContinue=false 结束。未建立 down 的 drag 返回 touch_not_down；重复 down 返回 gesture_busy。旧 pointer_tap 保留兼容。
 
-Mac 仅合并相邻且同类型的 pointer_drag，不跨 down/up 合并；up 携带最终坐标。Android 单个手势分段执行中仅保存最新待移动坐标，up 标记不会被移动覆盖；等待当前段完成后释放。stop、失焦引发的停止、断线、超时与撤销会丢弃待移动位置并结束当前触摸。释放可能触发目标应用的松手行为，已发生的按下或拖动不能撤销。
+Mac 仅合并相邻、同向共线的 pointer_drag，保留转折且不跨 down/up 合并；up 携带最终坐标。Android 单个手势分段执行中缓存有界路径点并保留转折，up 标记不会被移动覆盖；等待当前段完成后释放。stop、失焦引发的停止、断线、超时与撤销会丢弃待移动位置并结束当前触摸。释放可能触发目标应用的松手行为，已发生的按下或拖动不能撤销。
 
 
 ### 键鼠协同与错误恢复（当前客户端）
@@ -136,3 +136,25 @@ Mac 仅合并相邻且同类型的 pointer_drag，不跨 down/up 合并；up 携
 | 断线 / 认证失败 | 释放捕获，不重放文字和手势；重新认证不会恢复旧控制会话 |
 
 控制请求限速与文字/快照/保活共享服务端每秒 40 条的总预算，不能将它们当作独立限额。扩展协议时不得引入并行 exchange 或在确认丢失时补发触摸。TLS 互通测试验证封装与顺序，真实系统手势完成仍需手机验收。
+
+## 调试 APK 推送（0.10.0，协议版本仍为 1）
+
+沿用固定证书 TLS 与已配对认证，所有请求/响应仍遵循现有封装；不另开下载端口。客户端先暂停目标设备输入和控制，串行发送以下消息。payload 字段均为字符串，严格拒绝额外字段；`owner` 仅由服务端内部注入，客户端不得提供。
+
+| 类型 | payload | 成功状态 |
+| --- | --- | --- |
+| `update.begin` | `size`：十进制总字节数；`sha256`：64 位小写十六进制摘要 | `ok` |
+| `update.chunk` | `offset`：十进制字节偏移；`data`：标准 Base64 | `ok` |
+| `update.finish` | 空对象 | `update_ready` |
+
+手机须先允许接收（10 分钟），上传绑定当前 WebSocket 的服务端所有者。包大小 1–80 MiB；每片 1–8192 字节，必须连续且不超过声明大小。Mac 每片至少间隔 40ms，与其他消息共用 40 条/秒上限。空闲超过 60 秒的上传在下次请求时失效；断线、停止接收或手动取消清理部分文件并撤销授权。
+
+完成时校验总大小、SHA-256、APK 包名、当前签名集合一致及 versionCode 严格递增，最后再次检查授权。`update_ready` 仅表示已准备好安装包，绝不表示已安装。用户在手机触发安装时再次校验，通过只读 content URI 交给系统安装程序确认。
+
+错误状态包括 `update_not_allowed`、`update_expired`、`update_busy`、`update_rejected`；认证与结构错误仍返回既有 `unauthorized` / `invalid_message`。旧端返回 `unknown_type`，应提示先手动安装基础版本。失败不补发，需重新允许并从头上传。日志仅记录预定义结果，不记录 APK 内容、路径、摘要或协议载荷。
+
+## 自动诊断同步（0.10.1）
+
+已认证且空 payload 的 `session.ping` 响应在 `pong` 外附带 `diagnostics` 字符串：手机当前最多 300 条白名单事件及版本/API 信息。关闭记录时返回空字符串；未认证、已撤销或额外字段的请求不读取日志。旧版本无该字段，Mac 保持兼容。该响应只发往已配对连接，不做公网上传。
+
+Mac 在空闲时每 5 秒心跳接收快照；输入/控制队列或 APK 上传忙碌时让行。收到日志上限 32 KiB，按证书指纹哈希生成本地文件名，原子覆盖 `/tmp/wifi-remote-input/phone-<hash>.log`（目录 0700、文件 0600），不使用远端路径。空快照会清空文件；断线保留最后收到的快照。此功能是有界诊断快照，不保证忙碌或断线期间每个事件都被归档。
