@@ -18,7 +18,7 @@
 
 ## 本次大更新：手机控制与键鼠协同
 
-从远程打字，扩展到用 Mac 键鼠操作手机。当前 Mac 版本为 **0.10.2**、Android 为 **0.10.1**，建议一起更新；这是功能上的大更新，尚未发布 1.0。
+从远程打字，扩展到用 Mac 键鼠操作手机。当前 Mac 版本为 **0.10.3**、Android 为 **0.10.1**，建议一起更新；这是功能上的大更新，尚未发布 1.0。
 
 - **鼠标操作**：移动手机指针，左键点击、按住拖动或长按，右键返回。
 - **直接打字**：点中手机普通输入框后，继续用 Mac 输入中文，无需退出捕获或切换页面；Mac 同步显示手机文字。
@@ -85,17 +85,17 @@ flowchart LR
 
 你需要一台运行 **macOS 13 或更新版本**的 Mac，以及一台运行 **Android 10 或更新版本**的手机。两端安装 WiFi Remote Input，并连接同一 Wi-Fi；首次扫码需要 Mac 摄像头。
 
-可以从 [GitHub 发布页](https://github.com/maxjchuang/wifi-remote-input/releases) 下载打包好的应用。当前提供 **v0.10.2 预览版**：
+可以从 [GitHub 发布页](https://github.com/maxjchuang/wifi-remote-input/releases) 下载打包好的应用。当前提供 **v0.10.3 预览版**：
 
 | 平台 | 下载 | 要求 |
 | --- | --- | --- |
-| Mac | [下载 Mac 应用 ZIP](https://github.com/maxjchuang/wifi-remote-input/releases/download/v0.10.2/WiFiRemoteInput-0.10.2-macOS.zip) | Apple Silicon（M 系列芯片），macOS 13+；应用版本 0.10.2 |
-| Android | [下载 Android APK](https://github.com/maxjchuang/wifi-remote-input/releases/download/v0.10.2/WiFiRemoteInput-0.10.1-debug.apk) | Android 10+；应用版本 0.10.1 |
-| 文件校验 | [SHA256SUMS.txt](https://github.com/maxjchuang/wifi-remote-input/releases/download/v0.10.2/SHA256SUMS.txt) | 校验下载文件是否完整 |
+| Mac | [下载 Mac 应用 ZIP](https://github.com/maxjchuang/wifi-remote-input/releases/download/v0.10.3/WiFiRemoteInput-0.10.3-macOS.zip) | Apple Silicon（M 系列芯片），macOS 13+；应用版本 0.10.3 |
+| Android | [下载 Android APK](https://github.com/maxjchuang/wifi-remote-input/releases/download/v0.10.3/WiFiRemoteInput-0.10.1-debug.apk) | Android 10+；应用版本 0.10.1 |
+| 文件校验 | [SHA256SUMS.txt](https://github.com/maxjchuang/wifi-remote-input/releases/download/v0.10.3/SHA256SUMS.txt) | 校验下载文件是否完整 |
 
 Mac 下载后解压，将 `WiFi Remote Input.app` 拖入「应用程序」；更新时先退出正在运行的旧版。Android 下载后在手机确认安装，再按下方步骤启用输入法并配对。手机不需要开启开发者模式、USB 调试，也不需要 Root。
 
-这是开发预览包：Mac 使用本地临时签名，尚未经过 Apple 公证，系统可能阻止首次打开；Android 使用调试签名，覆盖安装要求原应用签名相同。Intel Mac 请参考[源码构建步骤](docs/development.md)。下载前请查看[发布说明与已知问题](https://github.com/maxjchuang/wifi-remote-input/releases/tag/v0.10.2)。
+这是开发预览包：Mac 使用本地临时签名，尚未经过 Apple 公证，系统可能阻止首次打开；Android 使用调试签名，覆盖安装要求原应用签名相同。Intel Mac 请参考[源码构建步骤](docs/development.md)。下载前请查看[发布说明与已知问题](https://github.com/maxjchuang/wifi-remote-input/releases/tag/v0.10.3)。
 
 已在 MacBook Pro 与小米 13 / HyperOS 上验证基本输入和扫码配对，Android 新界面也已通过用户实机验收。其他机型与应用的表现可能有所不同。
 

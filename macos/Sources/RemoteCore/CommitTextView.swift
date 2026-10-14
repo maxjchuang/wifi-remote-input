@@ -110,6 +110,16 @@ open class CommitTextView: NSTextView {
             if !value.isEmpty { onCommit(value) }
         }
     }
+    // NSTextView's default paste edits its storage directly, bypassing insertText.
+    // Route every paste command through the same authenticated edit/commit path.
+    open override func readSelection(from pboard: NSPasteboard, type: NSPasteboard.PasteboardType) -> Bool {
+        guard type == .string, permitted(), let text = pboard.string(forType: .string), !text.isEmpty else { return false }
+        insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
+        return true
+    }
+    open override func paste(_ sender: Any?) { _ = readSelection(from: .general, type: .string) }
+    open override func pasteAsPlainText(_ sender: Any?) { paste(sender) }
+    open override func pasteAsRichText(_ sender: Any?) { paste(sender) }
     open override func cut(_ sender: Any?) {
         guard mirrorsEditor, !broadcast, permitted(), let previous = base, !hasMarkedText() else { return }
         super.cut(sender); finishEdit(from: previous)

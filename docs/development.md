@@ -42,7 +42,7 @@ cd android
 
 ## 当前版本与代码导航
 
-当前 Mac 为 **0.10.2**、Android 为 **0.10.1**；协议版本仍为 **1**。手机控制属于新增功能域，不代表协议升级或已经发布 1.0。更新概览见[手机控制大更新](releases/0.9.md)，模块职责见[架构设计](architecture.md)。
+当前 Mac 为 **0.10.3**、Android 为 **0.10.1**；协议版本仍为 **1**。手机控制属于新增功能域，不代表协议升级或已经发布 1.0。更新概览见[手机控制大更新](releases/0.9.md)，模块职责见[架构设计](architecture.md)。
 
 - 输入与同步：`macos/Sources/RemoteCore/CommitTextView.swift`、`macos/Sources/WiFiRemoteInput/App.swift`、`android/app/src/main/java/dev/wifiremote/RemoteIme.kt`。
 - 捕获与路由：`macos/Sources/WiFiRemoteInput/PhoneControlPanel.swift`、`Client.swift`。
@@ -63,7 +63,7 @@ Android 版本号位于 `android/app/build.gradle.kts`，Mac 版本号由 `scrip
 | Android `PointerDragTest` / `PointerMotionTest` | 连续触摸路径、取消/释放、最新位置合并、插值与停止 |
 | Android `InteropTest` + Swift `Smoke` | 真正的 TLS/WebSocket 协议互通；手机执行回调为测试替身 |
 
-PointerDrag 路径测试使用 Robolectric native graphics，不能以 legacy 图形模式的路径结果代替真实几何检查。Mac 鼠标生命周期测试注入关联/隐藏函数，不捕获开发者的真实鼠标。最新已执行结果为 Swift 49 项、Android 58 项通过；详细适用范围见[验证记录](validation.md)，数字不是对真机兼容性的承诺。
+PointerDrag 路径测试使用 Robolectric native graphics，不能以 legacy 图形模式的路径结果代替真实几何检查。Mac 鼠标生命周期测试注入关联/隐藏函数，不捕获开发者的真实鼠标。最新已执行结果为 Swift 51 项、Android 58 项通过；详细适用范围见[验证记录](validation.md)，数字不是对真机兼容性的承诺。
 
 ## 实机验收清单
 

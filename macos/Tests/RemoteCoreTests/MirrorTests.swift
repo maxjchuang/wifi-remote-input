@@ -4,6 +4,32 @@ import AppKit
 @testable import RemoteCore
 
 final class MirrorTests: XCTestCase {
+    @MainActor func testPasteReplacesPhoneSelectionAndSurvivesPendingSnapshot() async {
+        let board = NSPasteboard.withUniqueName(); defer { board.releaseGlobally() }
+        board.setString("中文👋\n第二行", forType: .string)
+        let view = CommitTextView(); view.mirrorsEditor = true; view.permitted = { true }
+        let original = EditorSnapshot(editorId: "paste", text: "abc", selection: NSRange(location: 1, length: 1))
+        var edits: [[String: String]] = []; view.onEdit = { edits.append($0); return true }
+        view.synchronize(original, pending: false, blocked: false)
+        XCTAssertTrue(view.readSelection(from: board, type: .string))
+        XCTAssertEqual(edits.count, 1)
+        XCTAssertEqual(edits.first?["text"], "a中文👋\n第二行c")
+        XCTAssertEqual(edits.first?["expectedHash"], EditorEdit.hash(text: original.text, selection: original.selection))
+        view.synchronize(original, pending: true, blocked: false)
+        XCTAssertEqual(view.string, "a中文👋\n第二行c")
+    }
+    @MainActor func testPasteForwardsBroadcastAndBlockedPasteDoesNotEdit() async {
+        let board = NSPasteboard.withUniqueName(); defer { board.releaseGlobally() }
+        board.setString("粘贴👋", forType: .string)
+        let view = CommitTextView(); view.mirrorsEditor = true; view.broadcast = true; view.permitted = { true }
+        var commits: [String] = []; view.onCommit = { commits.append($0) }
+        XCTAssertTrue(view.readSelection(from: board, type: .string))
+        XCTAssertEqual(commits, ["粘贴👋"])
+        view.permitted = { false }
+        XCTAssertFalse(view.readSelection(from: board, type: .string))
+        XCTAssertEqual(commits, ["粘贴👋"]); XCTAssertEqual(view.string, "")
+    }
+
     @MainActor func testOneEditorKeepsConfirmedTextAndCompositionDoesNotSendEarly() async {
         let view = CommitTextView(); view.mirrorsEditor = true; view.permitted = { true }
         let original = EditorSnapshot(editorId: "1", text: "已有", selection: NSRange(location: 2, length: 0))

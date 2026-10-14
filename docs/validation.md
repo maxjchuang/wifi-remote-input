@@ -331,3 +331,9 @@ Swift 48 项、Android 58 项测试通过，包含认证/撤销/严格字段保�
 本机运行 Mac 0.10.2，收到的手机诊断日志标明 Android 0.10.1，确认自动同步至 `/tmp/wifi-remote-input/` 已实际生效。日志仍包含 GESTURE_CANCELLED 和 TOUCH_NOT_DOWN，不能据此宣布拖动问题已彻底解决；APK 推送后的系统安装流程仍缺少完整实机验收记录。
 
 本次 Swift 49 项测试及 git diff --check 通过。Android 复跑在解析 com.android.application 8.9.2 插件时失败，离线重试同样失败，未进入 Android 测试；此前 58 项通过属于历史验证结果。
+
+## macOS 0.10.3 — 粘贴文字转发
+
+用户报告粘贴后文字消失且手机不收到。回归测试在旧实现复现：NSTextView 的 readSelection 粘贴直接修改本地存储，绕过 insertText，既未调用 onEdit 也未调用 onCommit，后续手机快照覆盖本地内容。现在普通粘贴、粘贴纯文本和粘贴富文本统一提取 Unicode 纯文本并经过现有 insertText 的镜像编辑/普通提交路径，遵守 permitted 保护。
+
+Swift 51 项测试通过，包括原实现失败的新粘贴回归：中文/表情/多行、替换手机选区、正确快照哈希、待确认时不覆盖、多机提交与暂停拒绝。Mac release 构建、签名和 diff 检查通过。手机实机粘贴仍待用户验收；Android 沿用 0.10.1，不需要更新。
